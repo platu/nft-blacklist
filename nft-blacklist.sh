@@ -273,6 +273,14 @@ if [[ -s ${IP_BLACKLIST_FILE} ]]; then
 	sed -r -e '/^[[:space:]]*([#;$]|$)/d' -e 's/[[:space:]]+$//' -e 's#/32$##' "${IP_V4_ELEMENTS_RAW_TMP_FILE}" >"${IP_V4_ELEMENTS_NORM_TMP_FILE}"
 	grep -E '/[0-9]+$' "${IP_V4_ELEMENTS_NORM_TMP_FILE}" >"${IP_V4_ELEMENTS_NET_TMP_FILE}" || true
 	grep -Ev '/[0-9]+$' "${IP_V4_ELEMENTS_NORM_TMP_FILE}" >"${IP_V4_ELEMENTS_HOST_TMP_FILE}" || true
+	# Collapse network-only entries one more time to prevent interval overlaps.
+	if [[ -s ${IP_V4_ELEMENTS_NET_TMP_FILE} ]]; then
+		IP_V4_ELEMENTS_NET_COLLAPSED_TMP_FILE=$(mktemp -t nft-blacklist-ipv4-elements-net-collapsed-XXX)
+		if collapse_prefixes_python "${IP_V4_ELEMENTS_NET_TMP_FILE}" "${IP_V4_ELEMENTS_NET_COLLAPSED_TMP_FILE}" 4; then
+			cp "${IP_V4_ELEMENTS_NET_COLLAPSED_TMP_FILE}" "${IP_V4_ELEMENTS_NET_TMP_FILE}"
+		fi
+		((KEEP_TMP_FILES)) || rm -f "${IP_V4_ELEMENTS_NET_COLLAPSED_TMP_FILE}"
+	fi
 	if [[ -s ${IP_V4_ELEMENTS_HOST_TMP_FILE} ]]; then
 		{
 			echo "add element inet ${TABLE} ${SET_NAME_V4_HOST} {"
@@ -299,6 +307,14 @@ if [[ -s ${IP6_BLACKLIST_FILE} ]]; then
 	sed -r -e '/^[[:space:]]*([#;$]|$)/d' -e 's/[[:space:]]+$//' -e 's#/128$##I' "${IP_V6_ELEMENTS_RAW_TMP_FILE}" >"${IP_V6_ELEMENTS_NORM_TMP_FILE}"
 	grep -E '/[0-9]+$' "${IP_V6_ELEMENTS_NORM_TMP_FILE}" >"${IP_V6_ELEMENTS_NET_TMP_FILE}" || true
 	grep -Ev '/[0-9]+$' "${IP_V6_ELEMENTS_NORM_TMP_FILE}" >"${IP_V6_ELEMENTS_HOST_TMP_FILE}" || true
+	# Collapse network-only entries one more time to prevent interval overlaps.
+	if [[ -s ${IP_V6_ELEMENTS_NET_TMP_FILE} ]]; then
+		IP_V6_ELEMENTS_NET_COLLAPSED_TMP_FILE=$(mktemp -t nft-blacklist-ipv6-elements-net-collapsed-XXX)
+		if collapse_prefixes_python "${IP_V6_ELEMENTS_NET_TMP_FILE}" "${IP_V6_ELEMENTS_NET_COLLAPSED_TMP_FILE}" 6; then
+			cp "${IP_V6_ELEMENTS_NET_COLLAPSED_TMP_FILE}" "${IP_V6_ELEMENTS_NET_TMP_FILE}"
+		fi
+		((KEEP_TMP_FILES)) || rm -f "${IP_V6_ELEMENTS_NET_COLLAPSED_TMP_FILE}"
+	fi
 	if [[ -s ${IP_V6_ELEMENTS_HOST_TMP_FILE} ]]; then
 		{
 			echo "add element inet ${TABLE} ${SET_NAME_V6_HOST} {"
