@@ -411,7 +411,7 @@ def generate_ruleset(
             lines.append(
                 f"add element inet {table} {name} {{ "
                 + "".join(chunks).rstrip(", ")
-                + " }}"
+                + " }"
             )
 
     add_elements(s4_host, v4_hosts)
