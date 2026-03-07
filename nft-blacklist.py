@@ -402,18 +402,23 @@ def main():
     p.set_defaults(apply=None)
     args = p.parse_args()
 
-    # very simple config: Python eval of a dict is fine in your context
     cfg_path = Path(args.config)
     cfg = parse_conf(cfg_path)
 
-    urls = cfg["BLACKLISTS"]
+    # Récupération directe des valeurs TOML (types natifs)
+    urls = cfg.get("BLACKLISTS", [])
     table = cfg.get("TABLE", "blackhole")
     chain = cfg.get("CHAIN", "input")
     hook = cfg.get("HOOK", "input")
-    v4_whitelist = parse_whitelist(cfg.get("IP_WHITELIST", []))
-    v6_whitelist = parse_whitelist(cfg.get("IP6_WHITELIST", []))
-    dry_run = parse_bool(cfg.get("DRY_RUN", "no"), default=False)
-    verbose = parse_bool(cfg.get("VERBOSE", "no"), default=False)
+
+    # Plus besoin de parse_whitelist, TOML fournit déjà une liste !
+    v4_whitelist = cfg.get("IP_WHITELIST", [])
+    v6_whitelist = cfg.get("IP6_WHITELIST", [])
+
+    # Plus besoin de parse_bool, TOML fournit déjà un booléen (True/False) !
+    dry_run = cfg.get("DRY_RUN", False)
+    verbose = cfg.get("VERBOSE", False)
+
     nft_cmd = args.nft or cfg.get("NFT", "nft")
 
     raw_lines = list(fetch_urls(urls))
@@ -435,6 +440,9 @@ def main():
         v6_whitelist,
     )
     output_path = Path(args.output)
+    output_path.parent.mkdir(
+        parents=True, exist_ok=True
+    )  # Sécurité pour créer le dossier
     output_path.write_text(ruleset, encoding="utf-8")
 
     should_apply = args.apply if args.apply is not None else (not dry_run)
