@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import concurrent.futures
 import ipaddress
 import re
 import shlex
@@ -100,31 +101,38 @@ def _extract_network_token(line: str) -> str | None:
 
 def fetch_urls(urls, timeout=10):
     user_agent = {
-        "User-Agent": ("nft-blacklist/1.0 " "(https://github.com/platu/nft-blacklist)")
+        "User-Agent": "nft-blacklist/1.0 (https://github.com/platu/nft-blacklist)"
     }
-    for url in urls:
+
+    # Utilisation d'une session pour le Connection Pooling (plus rapide)
+    session = requests.Session()
+    session.headers.update(user_agent)
+
+    def fetch_single(url: str) -> list[str]:
+        """Fonction locale pour traiter une seule URL."""
         parsed = urlparse(url)
         if parsed.scheme == "file":
             path = Path(unquote(parsed.path))
             try:
-                for line in path.read_text(
-                    encoding="utf-8", errors="replace"
-                ).splitlines():
-                    yield line.strip()
+                return path.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError as exc:
                 print(f"# warning: {url} -> {exc}", file=sys.stderr)
-            continue
+                return []
 
         try:
-            r = requests.get(url, timeout=timeout, headers=user_agent)
+            r = session.get(url, timeout=timeout)
+            r.raise_for_status()  # Lève une exception pour tout code d'erreur HTTP (404, 500, etc.)
+            return r.text.splitlines()
         except requests.RequestException as exc:
             print(f"# warning: {url} -> {exc}", file=sys.stderr)
-            continue
-        if r.status_code not in (200, 302):
-            print(f"# warning: {url} -> {r.status_code}", file=sys.stderr)
-            continue
-        for line in r.text.splitlines():
-            yield line.strip()
+            return []
+
+    # Parallélisation des téléchargements avec 5 workers (threads)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        for lines in executor.map(fetch_single, urls):
+            for line in lines:
+                if line_stripped := line.strip():  # Nettoie et ignore les lignes vides
+                    yield line_stripped
 
 
 def parse_ips(lines):
@@ -147,21 +155,43 @@ def parse_ips(lines):
 
 
 def drop_reserved(v4_list, v6_list):
-    def keep_v4(n):
-        return not any(n.subnet_of(p) for p in PRIVATE_V4)
-
-    def keep_v6(n):
-        return not any(n.subnet_of(p) for p in LINKLOCAL_V6)
-
-    v4_filtered = [n for n in v4_list if keep_v4(n)]
-    v6_filtered = [n for n in v6_list if keep_v6(n)]
+    # .is_private et .is_link_local sont des attributs beaucoup plus rapides
+    # que subnet_of() itéré sur une liste.
+    v4_filtered = [
+        n
+        for n in v4_list
+        # On exclut les IP privées (10.x, 192.168.x...), loopback (127.x) et multicast
+        if not (n.is_private or n.is_loopback or n.is_multicast)
+    ]
+    v6_filtered = [
+        n for n in v6_list if not (n.is_link_local or n.is_loopback or n.is_multicast)
+    ]
     return v4_filtered, v6_filtered
 
 
-def collapse_family(nets, version):
-    nets = [n for n in nets if n.version == version]
-    collapsed = ipaddress.collapse_addresses(nets)
-    hosts, nets_out = [], []
+def collapse_family(nets, version, do_optimize=True):
+    # 1. Ne garder que la bonne version
+    filtered_nets = [n for n in nets if n.version == version]
+
+    # 2. Dé-duplication rapide (Set)
+    # Convertir en ensemble élimine instantanément les doublons stricts.
+    unique_nets = set(filtered_nets)
+
+    # 3. Tri (Crucial pour les performances de collapse_addresses)
+    # ipaddress.collapse_addresses s'attend à un itérable. Le fait de lui
+    # fournir une liste déjà triée réduit énormément sa complexité temporelle.
+    sorted_nets = sorted(list(unique_nets))
+
+    # 4. Collapse (fusion des sous-réseaux)
+    if do_optimize:
+        collapsed = list(ipaddress.collapse_addresses(sorted_nets))
+    else:
+        collapsed = sorted_nets
+
+    hosts = []
+    nets_out = []
+
+    # 5. Séparation Hôtes (/32 ou /128) vs Réseaux
     for net in collapsed:
         if (version == 4 and net.prefixlen == 32) or (
             version == 6 and net.prefixlen == 128
@@ -169,6 +199,7 @@ def collapse_family(nets, version):
             hosts.append(str(net.network_address))
         else:
             nets_out.append(str(net.with_prefixlen))
+
     return hosts, nets_out
 
 
@@ -419,14 +450,18 @@ def main():
     dry_run = cfg.get("DRY_RUN", False)
     verbose = cfg.get("VERBOSE", False)
 
+    # Nouvelle ligne : récupérer l'option de consolidation
+    do_optimize_cidr = cfg.get("DO_OPTIMIZE_CIDR", True)
+
     nft_cmd = args.nft or cfg.get("NFT", "nft")
 
     raw_lines = list(fetch_urls(urls))
     v4, v6 = parse_ips(raw_lines)
     v4, v6 = drop_reserved(v4, v6)
 
-    v4_hosts, v4_nets = collapse_family(v4, 4)
-    v6_hosts, v6_nets = collapse_family(v6, 6)
+    # Passer le flag d'optimisation
+    v4_hosts, v4_nets = collapse_family(v4, 4, do_optimize=do_optimize_cidr)
+    v6_hosts, v6_nets = collapse_family(v6, 6, do_optimize=do_optimize_cidr)
 
     ruleset = generate_ruleset(
         table,
