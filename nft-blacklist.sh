@@ -35,6 +35,39 @@ IPV6_REGEX="(?:(?:[0-9a-f]{1,4}:){7,7}[0-9a-f]{1,4}|\
 
 function exists() { command -v "$1" >/dev/null 2>&1; }
 function count_entries() { awk 'END { print NR }' "$1"; }
+function collapse_prefixes_python() {
+	local input_file=$1
+	local output_file=$2
+	local family=$3
+	python3 - "${input_file}" "${output_file}" "${family}" <<'PY'
+import ipaddress
+import sys
+
+input_file, output_file, family = sys.argv[1:]
+wanted = int(family)
+networks = []
+
+with open(input_file, encoding="utf-8") as f:
+	for raw in f:
+		line = raw.strip()
+		if not line or line.startswith(("#", ";", "$")):
+			continue
+		try:
+			net = ipaddress.ip_network(line, strict=False)
+		except ValueError:
+			continue
+		if net.version == wanted:
+			networks.append(net)
+
+collapsed = ipaddress.collapse_addresses(networks)
+with open(output_file, "w", encoding="utf-8") as f:
+	for net in collapsed:
+		if (net.version == 4 and net.prefixlen == 32) or (net.version == 6 and net.prefixlen == 128):
+			f.write(f"{net.network_address}\n")
+		else:
+			f.write(f"{net.with_prefixlen}\n")
+PY
+}
 
 if [[ -z $1 ]]; then
 	echo "Error: please specify a configuration file, e.g. $0 /etc/nft-blacklist/nft-blacklist.conf"
@@ -155,6 +188,22 @@ if ((OPTIMIZE_CIDR)); then
 	((VERBOSE)) && echo -e "Saved: ${ip_v4_saved_count} IPv4, ${ip_v6_saved_count} IPv6\\n"
 	cp "${IP_BLACKLIST_TMP_FILE}" "${IP_BLACKLIST_FILE}"
 	cp "${IP6_BLACKLIST_TMP_FILE}" "${IP6_BLACKLIST_FILE}"
+fi
+
+# Final canonicalization pass: removes duplicates and overlaps
+# (e.g. an IP already covered by a CIDR) to avoid nft EEXIST failures.
+if exists python3; then
+	IP_BLACKLIST_COLLAPSED_TMP_FILE=$(mktemp -t nft-blacklist-ip-collapsed-XXX)
+	IP6_BLACKLIST_COLLAPSED_TMP_FILE=$(mktemp -t nft-blacklist-ip6-collapsed-XXX)
+	if collapse_prefixes_python "${IP_BLACKLIST_FILE}" "${IP_BLACKLIST_COLLAPSED_TMP_FILE}" 4; then
+		cp "${IP_BLACKLIST_COLLAPSED_TMP_FILE}" "${IP_BLACKLIST_FILE}"
+	fi
+	if collapse_prefixes_python "${IP6_BLACKLIST_FILE}" "${IP6_BLACKLIST_COLLAPSED_TMP_FILE}" 6; then
+		cp "${IP6_BLACKLIST_COLLAPSED_TMP_FILE}" "${IP6_BLACKLIST_FILE}"
+	fi
+	((KEEP_TMP_FILES)) || rm -f "${IP_BLACKLIST_COLLAPSED_TMP_FILE}" "${IP6_BLACKLIST_COLLAPSED_TMP_FILE}"
+elif ((VERBOSE)); then
+	echo >&2 "Warning: python3 is not available; skipping final overlap collapse"
 fi
 
 ((KEEP_TMP_FILES)) || rm -f "${IP_BLACKLIST_TMP_FILE}" "${IP6_BLACKLIST_TMP_FILE}"
