@@ -327,10 +327,35 @@ fi
 
 if ((!DRY_RUN)); then
 	((VERBOSE)) && echo "Applying ruleset..."
-	${NFT} -f "${RULESET_FILE}" || {
-		echo >&2 "Failed to apply the ruleset"
+	RULESET_APPLY_BASE_TMP_FILE=$(mktemp -t nft-blacklist-ruleset-base-XXX)
+	RULESET_APPLY_ELEMENTS_TMP_FILE=$(mktemp -t nft-blacklist-ruleset-elements-XXX)
+	RULESET_APPLY_ONE_ELEMENT_TMP_FILE=$(mktemp -t nft-blacklist-ruleset-element-XXX)
+
+	# Apply non-element commands first, then add elements one by one.
+	grep -v '^add element inet ' "${RULESET_FILE}" >"${RULESET_APPLY_BASE_TMP_FILE}"
+	grep '^add element inet ' "${RULESET_FILE}" >"${RULESET_APPLY_ELEMENTS_TMP_FILE}" || true
+
+	${NFT} -f "${RULESET_APPLY_BASE_TMP_FILE}" || {
+		echo >&2 "Failed to apply the base ruleset"
 		exit 1
 	}
+
+	if [[ -s ${RULESET_APPLY_ELEMENTS_TMP_FILE} ]]; then
+		while IFS= read -r element_cmd; do
+			printf '%s\n' "${element_cmd}" >"${RULESET_APPLY_ONE_ELEMENT_TMP_FILE}"
+			if ! apply_output=$(${NFT} -f "${RULESET_APPLY_ONE_ELEMENT_TMP_FILE}" 2>&1); then
+				if [[ ${apply_output} == *"File exists"* ]]; then
+					((VERBOSE)) && echo "Skipping existing element: ${element_cmd}"
+					continue
+				fi
+				echo >&2 "${apply_output}"
+				echo >&2 "Failed to apply ruleset element: ${element_cmd}"
+				exit 1
+			fi
+		done <"${RULESET_APPLY_ELEMENTS_TMP_FILE}"
+	fi
+
+	((KEEP_TMP_FILES)) || rm -f "${RULESET_APPLY_BASE_TMP_FILE}" "${RULESET_APPLY_ELEMENTS_TMP_FILE}" "${RULESET_APPLY_ONE_ELEMENT_TMP_FILE}"
 fi
 
 ((VERBOSE)) && echo "Done!"
