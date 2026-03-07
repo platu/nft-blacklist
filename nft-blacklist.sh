@@ -13,8 +13,12 @@ NFT=nft            # can be "sudo /sbin/nft" or whatever to apply the ruleset
 DEFAULT_HOOK=input # use "prerouting" if you need to drop packets before other prerouting rule chains
 DEFAULT_CHAIN=input
 SET_NAME_PREFIX=blacklist
-SET_NAME_V4="${SET_NAME_PREFIX}_v4"
-SET_NAME_V6="${SET_NAME_PREFIX}_v6"
+COUNTER_NAME_V4="${SET_NAME_PREFIX}_v4"
+COUNTER_NAME_V6="${SET_NAME_PREFIX}_v6"
+SET_NAME_V4_HOST="${SET_NAME_PREFIX}_v4_host"
+SET_NAME_V4_NET="${SET_NAME_PREFIX}_v4_net"
+SET_NAME_V6_HOST="${SET_NAME_PREFIX}_v6_host"
+SET_NAME_V6_NET="${SET_NAME_PREFIX}_v6_net"
 IPV4_REGEX="(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]{2})?"
 IPV6_REGEX="(?:(?:[0-9a-f]{1,4}:){7,7}[0-9a-f]{1,4}|\
 (?:[0-9a-f]{1,4}:){1,7}:|\
@@ -81,7 +85,7 @@ if [[ -z $1 ]]; then
 	exit 1
 fi
 
-# shellcheck source=nft-blacklist.conf
+# shellcheck source=/dev/null
 if ! source "$1"; then
 	echo "Error: can't load configuration file $1"
 	exit 1
@@ -238,46 +242,78 @@ cat >|"${RULESET_FILE}" <<EOF
 $(printf "#   - %s\n" "${BLACKLISTS[@]}")
 #
 add table inet ${TABLE}
-add counter inet ${TABLE} ${SET_NAME_V4}
-add counter inet ${TABLE} ${SET_NAME_V6}
-add set inet ${TABLE} ${SET_NAME_V4} { type ipv4_addr; flags interval; auto-merge; }
-flush set inet ${TABLE} ${SET_NAME_V4}
-add set inet ${TABLE} ${SET_NAME_V6} { type ipv6_addr; flags interval; auto-merge; }
-flush set inet ${TABLE} ${SET_NAME_V6}
+add counter inet ${TABLE} ${COUNTER_NAME_V4}
+add counter inet ${TABLE} ${COUNTER_NAME_V6}
+add set inet ${TABLE} ${SET_NAME_V4_HOST} { type ipv4_addr; }
+flush set inet ${TABLE} ${SET_NAME_V4_HOST}
+add set inet ${TABLE} ${SET_NAME_V4_NET} { type ipv4_addr; flags interval; auto-merge; }
+flush set inet ${TABLE} ${SET_NAME_V4_NET}
+add set inet ${TABLE} ${SET_NAME_V6_HOST} { type ipv6_addr; }
+flush set inet ${TABLE} ${SET_NAME_V6_HOST}
+add set inet ${TABLE} ${SET_NAME_V6_NET} { type ipv6_addr; flags interval; auto-merge; }
+flush set inet ${TABLE} ${SET_NAME_V6_NET}
 add chain inet ${TABLE} ${CHAIN} { type filter hook ${HOOK} priority filter - 1; policy accept; }
 flush chain inet ${TABLE} ${CHAIN}
 add rule inet ${TABLE} ${CHAIN} iif "lo" accept
 add rule inet ${TABLE} ${CHAIN} meta pkttype { broadcast, multicast } accept\
 ${ip_whitelist_rule}\
 ${ip6_whitelist_rule}
-add rule inet ${TABLE} ${CHAIN} ip saddr @${SET_NAME_V4} counter name ${SET_NAME_V4} drop
-add rule inet ${TABLE} ${CHAIN} ip6 saddr @${SET_NAME_V6} counter name ${SET_NAME_V6} drop
+add rule inet ${TABLE} ${CHAIN} ip saddr @${SET_NAME_V4_HOST} counter name ${COUNTER_NAME_V4} drop
+add rule inet ${TABLE} ${CHAIN} ip saddr @${SET_NAME_V4_NET} counter name ${COUNTER_NAME_V4} drop
+add rule inet ${TABLE} ${CHAIN} ip6 saddr @${SET_NAME_V6_HOST} counter name ${COUNTER_NAME_V6} drop
+add rule inet ${TABLE} ${CHAIN} ip6 saddr @${SET_NAME_V6_NET} counter name ${COUNTER_NAME_V6} drop
 EOF
 
 if [[ -s ${IP_BLACKLIST_FILE} ]]; then
 	IP_V4_ELEMENTS_RAW_TMP_FILE=$(mktemp -t nft-blacklist-ipv4-elements-raw-XXX)
 	IP_V4_ELEMENTS_NORM_TMP_FILE=$(mktemp -t nft-blacklist-ipv4-elements-norm-XXX)
+	IP_V4_ELEMENTS_HOST_TMP_FILE=$(mktemp -t nft-blacklist-ipv4-elements-host-XXX)
+	IP_V4_ELEMENTS_NET_TMP_FILE=$(mktemp -t nft-blacklist-ipv4-elements-net-XXX)
 	tr -d '\r' <"${IP_BLACKLIST_FILE}" >"${IP_V4_ELEMENTS_RAW_TMP_FILE}"
 	sed -r -e '/^[[:space:]]*([#;$]|$)/d' -e 's/[[:space:]]+$//' -e 's#/32$##' "${IP_V4_ELEMENTS_RAW_TMP_FILE}" >"${IP_V4_ELEMENTS_NORM_TMP_FILE}"
-	{
-		echo "add element inet ${TABLE} ${SET_NAME_V4} {"
-		sed -r 's#^(.*)$#  \1,#' "${IP_V4_ELEMENTS_NORM_TMP_FILE}"
-		echo "}"
-	} >>"${RULESET_FILE}"
-	((KEEP_TMP_FILES)) || rm -f "${IP_V4_ELEMENTS_RAW_TMP_FILE}" "${IP_V4_ELEMENTS_NORM_TMP_FILE}"
+	grep -E '/[0-9]+$' "${IP_V4_ELEMENTS_NORM_TMP_FILE}" >"${IP_V4_ELEMENTS_NET_TMP_FILE}" || true
+	grep -Ev '/[0-9]+$' "${IP_V4_ELEMENTS_NORM_TMP_FILE}" >"${IP_V4_ELEMENTS_HOST_TMP_FILE}" || true
+	if [[ -s ${IP_V4_ELEMENTS_HOST_TMP_FILE} ]]; then
+		{
+			echo "add element inet ${TABLE} ${SET_NAME_V4_HOST} {"
+			sed -r 's#^(.*)$#  \1,#' "${IP_V4_ELEMENTS_HOST_TMP_FILE}"
+			echo "}"
+		} >>"${RULESET_FILE}"
+	fi
+	if [[ -s ${IP_V4_ELEMENTS_NET_TMP_FILE} ]]; then
+		{
+			echo "add element inet ${TABLE} ${SET_NAME_V4_NET} {"
+			sed -r 's#^(.*)$#  \1,#' "${IP_V4_ELEMENTS_NET_TMP_FILE}"
+			echo "}"
+		} >>"${RULESET_FILE}"
+	fi
+	((KEEP_TMP_FILES)) || rm -f "${IP_V4_ELEMENTS_RAW_TMP_FILE}" "${IP_V4_ELEMENTS_NORM_TMP_FILE}" "${IP_V4_ELEMENTS_HOST_TMP_FILE}" "${IP_V4_ELEMENTS_NET_TMP_FILE}"
 fi
 
 if [[ -s ${IP6_BLACKLIST_FILE} ]]; then
 	IP_V6_ELEMENTS_RAW_TMP_FILE=$(mktemp -t nft-blacklist-ipv6-elements-raw-XXX)
 	IP_V6_ELEMENTS_NORM_TMP_FILE=$(mktemp -t nft-blacklist-ipv6-elements-norm-XXX)
+	IP_V6_ELEMENTS_HOST_TMP_FILE=$(mktemp -t nft-blacklist-ipv6-elements-host-XXX)
+	IP_V6_ELEMENTS_NET_TMP_FILE=$(mktemp -t nft-blacklist-ipv6-elements-net-XXX)
 	tr -d '\r' <"${IP6_BLACKLIST_FILE}" >"${IP_V6_ELEMENTS_RAW_TMP_FILE}"
 	sed -r -e '/^[[:space:]]*([#;$]|$)/d' -e 's/[[:space:]]+$//' -e 's#/128$##I' "${IP_V6_ELEMENTS_RAW_TMP_FILE}" >"${IP_V6_ELEMENTS_NORM_TMP_FILE}"
-	{
-		echo "add element inet ${TABLE} ${SET_NAME_V6} {"
-		sed -r 's#^(.*)$#  \1,#' "${IP_V6_ELEMENTS_NORM_TMP_FILE}"
-		echo "}"
-	} >>"${RULESET_FILE}"
-	((KEEP_TMP_FILES)) || rm -f "${IP_V6_ELEMENTS_RAW_TMP_FILE}" "${IP_V6_ELEMENTS_NORM_TMP_FILE}"
+	grep -E '/[0-9]+$' "${IP_V6_ELEMENTS_NORM_TMP_FILE}" >"${IP_V6_ELEMENTS_NET_TMP_FILE}" || true
+	grep -Ev '/[0-9]+$' "${IP_V6_ELEMENTS_NORM_TMP_FILE}" >"${IP_V6_ELEMENTS_HOST_TMP_FILE}" || true
+	if [[ -s ${IP_V6_ELEMENTS_HOST_TMP_FILE} ]]; then
+		{
+			echo "add element inet ${TABLE} ${SET_NAME_V6_HOST} {"
+			sed -r 's#^(.*)$#  \1,#' "${IP_V6_ELEMENTS_HOST_TMP_FILE}"
+			echo "}"
+		} >>"${RULESET_FILE}"
+	fi
+	if [[ -s ${IP_V6_ELEMENTS_NET_TMP_FILE} ]]; then
+		{
+			echo "add element inet ${TABLE} ${SET_NAME_V6_NET} {"
+			sed -r 's#^(.*)$#  \1,#' "${IP_V6_ELEMENTS_NET_TMP_FILE}"
+			echo "}"
+		} >>"${RULESET_FILE}"
+	fi
+	((KEEP_TMP_FILES)) || rm -f "${IP_V6_ELEMENTS_RAW_TMP_FILE}" "${IP_V6_ELEMENTS_NORM_TMP_FILE}" "${IP_V6_ELEMENTS_HOST_TMP_FILE}" "${IP_V6_ELEMENTS_NET_TMP_FILE}"
 fi
 
 if ((!DRY_RUN)); then
