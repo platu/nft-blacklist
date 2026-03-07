@@ -136,10 +136,14 @@ def drop_reserved(v4_list, v6_list):
     # .is_private et .is_link_local sont des attributs beaucoup plus rapides
     # que subnet_of() itéré sur une liste.
     v4_filtered = [
-        n for n in v4_list if not (n.is_private or n.is_loopback or n.is_multicast)
+        n
+        for n in v4_list
+        if not (n.is_private or n.is_loopback or n.is_multicast)
     ]
     v6_filtered = [
-        n for n in v6_list if not (n.is_link_local or n.is_loopback or n.is_multicast)
+        n
+        for n in v6_list
+        if not (n.is_link_local or n.is_loopback or n.is_multicast)
     ]
     return v4_filtered, v6_filtered
 
@@ -265,8 +269,12 @@ def apply_ruleset(ruleset: str, nft_cmd: str, verbose=False):
 
     # 2. Mode Fallback
     lines = ruleset.splitlines()
-    base_lines = [line for line in lines if not line.startswith(ADD_ELEMENT_PREFIX)]
-    element_lines = [line for line in lines if line.startswith(ADD_ELEMENT_PREFIX)]
+    base_lines = [
+        line for line in lines if not line.startswith(ADD_ELEMENT_PREFIX)
+    ]
+    element_lines = [
+        line for line in lines if line.startswith(ADD_ELEMENT_PREFIX)
+    ]
 
     # On applique d'abord la structure (tables, chains, sets vides)
     base_result = _run_nft_inline(nft_cmd, "\n".join(base_lines) + "\n")
@@ -289,7 +297,9 @@ def apply_ruleset(ruleset: str, nft_cmd: str, verbose=False):
             for element in _expand_element_line(chunk):
                 elem_result = _run_nft_inline(nft_cmd, element + "\n")
                 if elem_result.returncode != 0 and verbose:
-                    elem_msg = (elem_result.stderr or "") + (elem_result.stdout or "")
+                    elem_msg = (elem_result.stderr or "") + (
+                        elem_result.stdout or ""
+                    )
                     if "File exists" in elem_msg:
                         print(
                             f"Skipping existing element: {element}",
@@ -400,7 +410,9 @@ def generate_ruleset(
             # Prendre une tranche (slice) de 1000 éléments
             batch = elems[i : i + chunk_size]
             joined_batch = ", ".join(batch)
-            lines.append(f"add element inet {table} {name} {{ {joined_batch} }}")
+            lines.append(
+                f"add element inet {table} {name} {{ {joined_batch} }}"
+            )
 
     # 5. Injection des adresses
     add_elements(s4_host, v4_hosts)
