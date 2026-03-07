@@ -27,24 +27,9 @@ LINKLOCAL_V6 = [
 ]
 
 # Match a leading IPv4/IPv6 token, optionally with a prefix length.
-LEADING_NET_TOKEN = re.compile(r"^([0-9A-Fa-f:.]+(?:/\d{1,3})?)")
 ELEMENT_LINE = re.compile(
     r"^add element inet (?P<table>\S+) (?P<set_name>\S+) \{ (?P<elements>.*) \}$"
 )
-
-
-def _strip_comment(line: str) -> str:
-    """Strip trailing # comment, but keep # if inside quotes."""
-    in_single = False
-    in_double = False
-    for i, ch in enumerate(line):
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        elif ch == "#" and not in_single and not in_double:
-            return line[:i]
-    return line
 
 
 def parse_conf(path: Path) -> dict:
@@ -72,30 +57,6 @@ def parse_whitelist(value):
     if isinstance(value, (list, tuple)):
         return [str(v).strip() for v in value if str(v).strip()]
     return [part.strip() for part in str(value).split(",") if part.strip()]
-
-
-def _normalize_v4_token(token: str) -> str:
-    if "." not in token:
-        return token
-    addr, slash, prefix = token.partition("/")
-    octets = addr.split(".")
-    if len(octets) != 4:
-        return token
-    try:
-        normalized = ".".join(str(int(o, 10)) for o in octets)
-    except ValueError:
-        return token
-    return f"{normalized}/{prefix}" if slash else normalized
-
-
-def _extract_network_token(line: str) -> str | None:
-    m = LEADING_NET_TOKEN.match(line)
-    if not m:
-        return None
-    token = m.group(1)
-    if "." in token:
-        token = _normalize_v4_token(token)
-    return token
 
 
 def fetch_urls(urls, timeout=10):
@@ -134,22 +95,33 @@ def fetch_urls(urls, timeout=10):
                     yield line_stripped
 
 
-def parse_ips(lines):
+def parse_ips(
+    lines: list[str],
+) -> tuple[list[ipaddress.IPv4Network], list[ipaddress.IPv6Network]]:
     v4, v6 = [], []
     for line in lines:
-        if not line or line.startswith(("#", ";", "$")):
+        # Nettoyage des commentaires et espaces
+        line = line.split("#")[0].split(";")[0].split("$")[0].strip()
+        if not line:
             continue
-        token = _extract_network_token(line)
-        if not token:
-            continue
+
+        # Extraction du premier élément qui ressemble à une IP/Réseau
+        # (souvent les listes contiennent "IP commentaire")
+        token = line.split()[0]
+
         try:
+            # ipaddress gère nativement les IP seules (converties en /32 ou /128)
+            # et les réseaux. strict=False permet d'accepter "192.168.0.1/24"
+            # et de le convertir en "192.168.0.0/24" silencieusement.
             net = ipaddress.ip_network(token, strict=False)
+            if net.version == 4:
+                v4.append(net)
+            else:
+                v6.append(net)
         except ValueError:
+            # Ce n'était pas une IP valide (ex: un nom de domaine ou un format exotique)
             continue
-        if net.version == 4:
-            v4.append(net)
-        else:
-            v6.append(net)
+
     return v4, v6
 
 
@@ -236,16 +208,6 @@ def run_subprocess(
     except FileNotFoundError:
         print(f"Commande non trouvee : {cmd[0]}", file=sys.stderr)
         sys.exit(1)
-
-
-def _run_nft_file(nft_cmd: str, ruleset_path: Path):
-    cmd = shlex.split(nft_cmd) + ["-f", str(ruleset_path)]
-    return run_subprocess(
-        cmd,
-        error_msg="Erreur lors de l'execution de nft via fichier",
-        capture_output=True,
-        check=False,
-    )
 
 
 def _expand_element_line(line: str) -> list[str]:
