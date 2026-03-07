@@ -80,6 +80,15 @@ with open(output_file, "w", encoding="utf-8") as f:
 PY
 }
 
+function append_elements_to_ruleset() {
+	local set_name=$1
+	local input_file=$2
+	while IFS= read -r element; do
+		[[ -n ${element} ]] || continue
+		printf 'add element inet %s %s { %s }\n' "${TABLE}" "${set_name}" "${element}" >>"${RULESET_FILE}"
+	done <"${input_file}"
+}
+
 if [[ -z $1 ]]; then
 	echo "Error: please specify a configuration file, e.g. $0 /etc/nft-blacklist/nft-blacklist.conf"
 	exit 1
@@ -282,18 +291,10 @@ if [[ -s ${IP_BLACKLIST_FILE} ]]; then
 		((KEEP_TMP_FILES)) || rm -f "${IP_V4_ELEMENTS_NET_COLLAPSED_TMP_FILE}"
 	fi
 	if [[ -s ${IP_V4_ELEMENTS_HOST_TMP_FILE} ]]; then
-		{
-			echo "add element inet ${TABLE} ${SET_NAME_V4_HOST} {"
-			sed -r 's#^(.*)$#  \1,#' "${IP_V4_ELEMENTS_HOST_TMP_FILE}"
-			echo "}"
-		} >>"${RULESET_FILE}"
+		append_elements_to_ruleset "${SET_NAME_V4_HOST}" "${IP_V4_ELEMENTS_HOST_TMP_FILE}"
 	fi
 	if [[ -s ${IP_V4_ELEMENTS_NET_TMP_FILE} ]]; then
-		{
-			echo "add element inet ${TABLE} ${SET_NAME_V4_NET} {"
-			sed -r 's#^(.*)$#  \1,#' "${IP_V4_ELEMENTS_NET_TMP_FILE}"
-			echo "}"
-		} >>"${RULESET_FILE}"
+		append_elements_to_ruleset "${SET_NAME_V4_NET}" "${IP_V4_ELEMENTS_NET_TMP_FILE}"
 	fi
 	((KEEP_TMP_FILES)) || rm -f "${IP_V4_ELEMENTS_RAW_TMP_FILE}" "${IP_V4_ELEMENTS_NORM_TMP_FILE}" "${IP_V4_ELEMENTS_HOST_TMP_FILE}" "${IP_V4_ELEMENTS_NET_TMP_FILE}"
 fi
@@ -316,18 +317,10 @@ if [[ -s ${IP6_BLACKLIST_FILE} ]]; then
 		((KEEP_TMP_FILES)) || rm -f "${IP_V6_ELEMENTS_NET_COLLAPSED_TMP_FILE}"
 	fi
 	if [[ -s ${IP_V6_ELEMENTS_HOST_TMP_FILE} ]]; then
-		{
-			echo "add element inet ${TABLE} ${SET_NAME_V6_HOST} {"
-			sed -r 's#^(.*)$#  \1,#' "${IP_V6_ELEMENTS_HOST_TMP_FILE}"
-			echo "}"
-		} >>"${RULESET_FILE}"
+		append_elements_to_ruleset "${SET_NAME_V6_HOST}" "${IP_V6_ELEMENTS_HOST_TMP_FILE}"
 	fi
 	if [[ -s ${IP_V6_ELEMENTS_NET_TMP_FILE} ]]; then
-		{
-			echo "add element inet ${TABLE} ${SET_NAME_V6_NET} {"
-			sed -r 's#^(.*)$#  \1,#' "${IP_V6_ELEMENTS_NET_TMP_FILE}"
-			echo "}"
-		} >>"${RULESET_FILE}"
+		append_elements_to_ruleset "${SET_NAME_V6_NET}" "${IP_V6_ELEMENTS_NET_TMP_FILE}"
 	fi
 	((KEEP_TMP_FILES)) || rm -f "${IP_V6_ELEMENTS_RAW_TMP_FILE}" "${IP_V6_ELEMENTS_NORM_TMP_FILE}" "${IP_V6_ELEMENTS_HOST_TMP_FILE}" "${IP_V6_ELEMENTS_NET_TMP_FILE}"
 fi
