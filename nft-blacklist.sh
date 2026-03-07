@@ -247,21 +247,33 @@ add rule inet ${TABLE} ${CHAIN} ip6 saddr @${SET_NAME_V6} counter name ${SET_NAM
 EOF
 
 if [[ -s ${IP_BLACKLIST_FILE} ]]; then
-	ip_v4_elements=$(sed -rn -e '/^[#$;]/d' -e 's/^([0-9./]+).*/  \1,/p' "${IP_BLACKLIST_FILE}")
-	cat >>"${RULESET_FILE}" <<EOF
-add element inet ${TABLE} ${SET_NAME_V4} {
-${ip_v4_elements}
-}
-EOF
+	IP_V4_ELEMENTS_RAW_TMP_FILE=$(mktemp -t nft-blacklist-ipv4-elements-raw-XXX)
+	IP_V4_ELEMENTS_NORM_TMP_FILE=$(mktemp -t nft-blacklist-ipv4-elements-norm-XXX)
+	IP_V4_ELEMENTS_UNIQ_TMP_FILE=$(mktemp -t nft-blacklist-ipv4-elements-uniq-XXX)
+	sed -rn -e '/^[#$;]/d' -e 's/^([0-9./]+).*/\1/p' "${IP_BLACKLIST_FILE}" >"${IP_V4_ELEMENTS_RAW_TMP_FILE}"
+	sed -r 's#/32$##' "${IP_V4_ELEMENTS_RAW_TMP_FILE}" >"${IP_V4_ELEMENTS_NORM_TMP_FILE}"
+	sort -u "${IP_V4_ELEMENTS_NORM_TMP_FILE}" >"${IP_V4_ELEMENTS_UNIQ_TMP_FILE}"
+	{
+		echo "add element inet ${TABLE} ${SET_NAME_V4} {"
+		sed -r 's#^(.*)$#  \1,#' "${IP_V4_ELEMENTS_UNIQ_TMP_FILE}"
+		echo "}"
+	} >>"${RULESET_FILE}"
+	((KEEP_TMP_FILES)) || rm -f "${IP_V4_ELEMENTS_RAW_TMP_FILE}" "${IP_V4_ELEMENTS_NORM_TMP_FILE}" "${IP_V4_ELEMENTS_UNIQ_TMP_FILE}"
 fi
 
 if [[ -s ${IP6_BLACKLIST_FILE} ]]; then
-	ip_v6_elements=$(sed -rn -e '/^[#$;]/d' -e "s/^(([0-9a-f:.]+:+[0-9a-f]*)+(\/[0-9]{1,3})?).*/  \\1,/Ip" "${IP6_BLACKLIST_FILE}")
-	cat >>"${RULESET_FILE}" <<EOF
-add element inet ${TABLE} ${SET_NAME_V6} {
-${ip_v6_elements}
-}
-EOF
+	IP_V6_ELEMENTS_RAW_TMP_FILE=$(mktemp -t nft-blacklist-ipv6-elements-raw-XXX)
+	IP_V6_ELEMENTS_NORM_TMP_FILE=$(mktemp -t nft-blacklist-ipv6-elements-norm-XXX)
+	IP_V6_ELEMENTS_UNIQ_TMP_FILE=$(mktemp -t nft-blacklist-ipv6-elements-uniq-XXX)
+	sed -rn -e '/^[#$;]/d' -e "s/^(([0-9a-f:.]+:+[0-9a-f]*)+(\/[0-9]{1,3})?).*/\1/Ip" "${IP6_BLACKLIST_FILE}" >"${IP_V6_ELEMENTS_RAW_TMP_FILE}"
+	sed -r 's#/128$##I' "${IP_V6_ELEMENTS_RAW_TMP_FILE}" >"${IP_V6_ELEMENTS_NORM_TMP_FILE}"
+	sort -fu "${IP_V6_ELEMENTS_NORM_TMP_FILE}" >"${IP_V6_ELEMENTS_UNIQ_TMP_FILE}"
+	{
+		echo "add element inet ${TABLE} ${SET_NAME_V6} {"
+		sed -r 's#^(.*)$#  \1,#' "${IP_V6_ELEMENTS_UNIQ_TMP_FILE}"
+		echo "}"
+	} >>"${RULESET_FILE}"
+	((KEEP_TMP_FILES)) || rm -f "${IP_V6_ELEMENTS_RAW_TMP_FILE}" "${IP_V6_ELEMENTS_NORM_TMP_FILE}" "${IP_V6_ELEMENTS_UNIQ_TMP_FILE}"
 fi
 
 if ((!DRY_RUN)); then
