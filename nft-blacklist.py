@@ -7,6 +7,7 @@ import subprocess  # nosec B404
 import sys
 import tempfile
 import time
+import tomllib
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -43,79 +44,10 @@ def _strip_comment(line: str) -> str:
     return line
 
 
-def parse_bash_conf(path):
-    cfg = {}
-    lines = Path(path).read_text(encoding="utf-8").splitlines()
-
-    current_array = None
-    array_items = []
-
-    for raw in lines:
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-
-        # inside multiline array
-        if current_array is not None:
-            # strip comment first
-            line_nc = _strip_comment(line).strip()
-            if not line_nc:
-                continue
-            if ")" in line_nc:
-                before, _, _ = line_nc.partition(")")
-                before = before.strip()
-                if before:
-                    # be forgiving: if shlex fails, just take the raw token
-                    try:
-                        array_items.extend(shlex.split(before))
-                    except ValueError:
-                        array_items.append(before.strip('"').strip("'"))
-                cfg[current_array] = array_items
-                current_array = None
-                array_items = []
-            else:
-                try:
-                    array_items.extend(shlex.split(line_nc))
-                except ValueError:
-                    array_items.append(line_nc.strip('"').strip("'"))
-            continue
-
-        # top‑level scalar/array
-        if "=" not in line:
-            continue
-        key, val = line.split("=", 1)
-        key = key.strip()
-        val = _strip_comment(val).strip()
-        if not val:
-            continue
-
-        # start of multiline array: VAR=(
-        if val == "(":
-            current_array = key
-            array_items = []
-            continue
-
-        # one‑line array: VAR=( ... )
-        if val.startswith("(") and val.endswith(")"):
-            inner = val[1:-1].strip()
-            if inner:
-                try:
-                    cfg[key] = shlex.split(inner)
-                except ValueError:
-                    # fallback: single token
-                    cfg[key] = [inner.strip('"').strip("'")]
-            else:
-                cfg[key] = []
-            continue
-
-        # scalar
-        if (val.startswith('"') and val.endswith('"')) or (
-            val.startswith("'") and val.endswith("'")
-        ):
-            val = val[1:-1]
-        cfg[key] = val
-
-    return cfg
+def parse_conf(path: Path) -> dict:
+    """Charge la configuration TOML."""
+    with open(path, "rb") as f:
+        return tomllib.load(f)
 
 
 def parse_bool(value, default=False):
@@ -165,7 +97,7 @@ def _extract_network_token(line: str) -> str | None:
 
 def fetch_urls(urls, timeout=10):
     user_agent = {
-        "User-Agent": "nft-blacklist/1.0 (https://github.com/leshniak/nft-blacklist)"
+        "User-Agent": ("nft-blacklist/1.0 " "(https://github.com/platu/nft-blacklist)")
     }
     for url in urls:
         parsed = urlparse(url)
@@ -218,7 +150,9 @@ def drop_reserved(v4_list, v6_list):
     def keep_v6(n):
         return not any(n.subnet_of(p) for p in LINKLOCAL_V6)
 
-    return [n for n in v4_list if keep_v4(n)], [n for n in v6_list if keep_v6(n)]
+    v4_filtered = [n for n in v4_list if keep_v4(n)]
+    v6_filtered = [n for n in v6_list if keep_v6(n)]
+    return v4_filtered, v6_filtered
 
 
 def collapse_family(nets, version):
@@ -441,7 +375,7 @@ def main():
 
     # very simple config: Python eval of a dict is fine in your context
     cfg_path = Path(args.config)
-    cfg = parse_bash_conf(cfg_path)
+    cfg = parse_conf(cfg_path)
 
     urls = cfg["BLACKLISTS"]
     table = cfg.get("TABLE", "blackhole")

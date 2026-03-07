@@ -1,0 +1,32 @@
+# Fichier : nft-blacklist.toml
+
+# Paths
+RULESET_FILE = "/var/cache/nft-blacklist/blacklist.nft"
+IP_BLACKLIST_FILE = "/var/cache/nft-blacklist/ip-blacklist.list"
+IP6_BLACKLIST_FILE = "/var/cache/nft-blacklist/ip6-blacklist.list"
+
+# Whitelisted addresses
+# Les listes sont gérées nativement, plus besoin de parser une chaîne avec des virgules !
+IP_WHITELIST = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "192.0.2.0/24"]
+IP6_WHITELIST = ["fe80::/10", "fd00::/8"]
+
+# Sample (!) list of URLs for IP blacklists
+BLACKLISTS = [
+  # "file:///etc/nft-blacklist/nft-blacklist-custom.list",
+  "https://check.torproject.org/cgi-bin/TorBulkExitList.py?ip=1.1.1.1",                      # TOR Exit Nodes
+  "https://danger.rulez.sk/projects/bruteforceblocker/blist.php",                            # BruteForceBlocker IP List
+  "https://www.spamhaus.org/drop/drop.lasso",                                                # Spamhaus DROP
+  "https://www.spamhaus.org/drop/dropv6.txt",                                                # Spamhaus DROPv6
+  "https://cinsscore.com/list/ci-badguys.txt",                                               # C.I. Army Malicious IP List
+  "https://lists.blocklist.de/lists/all.txt",                                                # blocklist.de attackers
+  "https://blocklist.greensnow.co/greensnow.txt",                                            # GreenSnow
+  "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset",
+]
+
+# nftables dedicated table name
+TABLE = "blackhole"
+
+# Options (booléens natifs)
+DO_OPTIMIZE_CIDR = false
+DRY_RUN = false
+VERBOSE = true
