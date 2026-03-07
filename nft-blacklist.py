@@ -28,6 +28,9 @@ LINKLOCAL_V6 = [
 
 # Match a leading IPv4/IPv6 token, optionally with a prefix length.
 LEADING_NET_TOKEN = re.compile(r"^([0-9A-Fa-f:.]+(?:/\d{1,3})?)")
+ELEMENT_LINE = re.compile(
+    r"^add element inet (?P<table>\S+) (?P<set_name>\S+) \{ (?P<elements>.*) \}$"
+)
 
 
 def _strip_comment(line: str) -> str:
@@ -174,6 +177,26 @@ def _run_nft_file(nft_cmd: str, ruleset_path: Path):
     return subprocess.run(cmd, text=True, capture_output=True)  # nosec B603
 
 
+def _expand_element_line(line: str) -> list[str]:
+    """Expand a bulk add element command into one command per element.
+
+    If parsing fails, return the original line so fallback still works.
+    """
+    m = ELEMENT_LINE.match(line)
+    if not m:
+        return [line]
+
+    table = m.group("table")
+    set_name = m.group("set_name")
+    elements = [e.strip() for e in m.group("elements").split(",") if e.strip()]
+    if not elements:
+        return [line]
+
+    return [
+        f"add element inet {table} {set_name} {{ {element} }}" for element in elements
+    ]
+
+
 def apply_ruleset(ruleset: str, nft_cmd: str, verbose=False):
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", suffix=".nft", delete=False
@@ -221,30 +244,36 @@ def apply_ruleset(ruleset: str, nft_cmd: str, verbose=False):
                 msg = (base_result.stderr or "") + (base_result.stdout or "")
                 raise RuntimeError(msg.strip() or "failed to apply base nft ruleset")
 
-            for element in element_lines:
-                with tempfile.NamedTemporaryFile(
-                    "w", encoding="utf-8", suffix=".nft", delete=False
-                ) as one_tmp:
-                    one_tmp.write(element + "\n")
-                    one_path = Path(one_tmp.name)
+            for bulk_element in element_lines:
+                for element in _expand_element_line(bulk_element):
+                    with tempfile.NamedTemporaryFile(
+                        "w", encoding="utf-8", suffix=".nft", delete=False
+                    ) as one_tmp:
+                        one_tmp.write(element + "\n")
+                        one_path = Path(one_tmp.name)
 
-                elem_result = _run_nft_file(nft_cmd, one_path)
-                if elem_result.returncode != 0:
-                    elem_msg = (elem_result.stderr or "") + (elem_result.stdout or "")
-                    if "File exists" in elem_msg:
-                        if verbose:
-                            print(
-                                f"Skipping existing element: {element}", file=sys.stderr
-                            )
-                        continue
-                    raise RuntimeError(
-                        (elem_msg.strip() + "\n" if elem_msg.strip() else "")
-                        + f"failed to apply ruleset element: {element}"
-                    )
+                    try:
+                        elem_result = _run_nft_file(nft_cmd, one_path)
+                    finally:
+                        one_path.unlink(missing_ok=True)
+
+                    if elem_result.returncode != 0:
+                        elem_msg = (elem_result.stderr or "") + (
+                            elem_result.stdout or ""
+                        )
+                        if "File exists" in elem_msg:
+                            if verbose:
+                                print(
+                                    f"Skipping existing element: {element}",
+                                    file=sys.stderr,
+                                )
+                            continue
+                        raise RuntimeError(
+                            (elem_msg.strip() + "\n" if elem_msg.strip() else "")
+                            + f"failed to apply ruleset element: {element}"
+                        )
         finally:
             base_path.unlink(missing_ok=True)
-            if one_path is not None:
-                one_path.unlink(missing_ok=True)
     finally:
         tmp_path.unlink(missing_ok=True)
 
