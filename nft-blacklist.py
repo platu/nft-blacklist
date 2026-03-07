@@ -322,31 +322,39 @@ def generate_ruleset(
     s6_host = f"{set_pref}_v6_host"
     s6_net = f"{set_pref}_v6_net"
 
-    # 1. Génération de l'en-tête et de la structure via une f-string multiligne
-    # C'est beaucoup plus lisible qu'une dizaine de `lines.append()`
-    ruleset = f"""# Generated {created_at}
-add table inet {table}
-add counter inet {table} {counter_v4}
-add counter inet {table} {counter_v6}
+    # Use chain lists to manage linefeeds
+    base_lines = [
+        f"# Generated {created_at}",
+        f"add table inet {table}",
+        f"add counter inet {table} {counter_v4}",
+        f"add counter inet {table} {counter_v6}",
+        "",
+        f"add set inet {table} {s4_host} {{ type ipv4_addr; }}",
+        f"flush set inet {table} {s4_host}",
+        (
+            f"add set inet {table} {s4_net} "
+            "{ type ipv4_addr; flags interval; auto-merge; }"
+        ),
+        f"flush set inet {table} {s4_net}",
+        "",
+        f"add set inet {table} {s6_host} {{ type ipv6_addr; }}",
+        f"flush set inet {table} {s6_host}",
+        (
+            f"add set inet {table} {s6_net} "
+            "{ type ipv6_addr; flags interval; auto-merge; }"
+        ),
+        f"flush set inet {table} {s6_net}",
+        "",
+        (
+            f"add chain inet {table} {chain} "
+            f"{{ type filter hook {hook} priority filter - 1; policy accept; }}"
+        ),
+        f"flush chain inet {table} {chain}",
+        f'add rule inet {table} {chain} iif "lo" accept',
+        f"add rule inet {table} {chain} meta pkttype {{ broadcast, multicast }} accept",
+    ]
 
-add set inet {table} {s4_host} {{ type ipv4_addr; }}
-flush set inet {table} {s4_host}
-add set inet {table} {s4_net} {{ type ipv4_addr; flags interval; auto-merge; }}
-flush set inet {table} {s4_net}
-
-add set inet {table} {s6_host} {{ type ipv6_addr; }}
-flush set inet {table} {s6_host}
-add set inet {table} {s6_net} {{ type ipv6_addr; flags interval; auto-merge; }}
-flush set inet {table} {s6_net}
-
-add chain inet {table} {chain} {{ type filter hook {hook}
-priority filter - 1; policy accept; }}
-flush chain inet {table} {chain}
-add rule inet {table} {chain} iif "lo" accept
-add rule inet {table} {chain} meta pkttype {{ broadcast, multicast }} accept
-"""
-
-    lines = [ruleset]
+    lines = base_lines
 
     # 2. Ajout des listes blanches si elles existent
     if v4_whitelist:
@@ -360,17 +368,27 @@ add rule inet {table} {chain} meta pkttype {{ broadcast, multicast }} accept
             f"ip6 saddr {{ {', '.join(v6_whitelist)} }} accept"
         )
 
-    # 3. Ajout des règles de drop
-    drop_rules = f"""
-add rule inet {table} {chain} ip saddr @{s4_host}
-counter name {counter_v4} drop
-add rule inet {table} {chain} ip saddr @{s4_net} counter name {counter_v4} drop
-add rule inet {table} {chain} ip6 saddr @{s6_host}
-counter name {counter_v6} drop
-add rule inet {table} {chain} ip6 saddr @{s6_net}
-counter name {counter_v6} drop
-"""
-    lines.append(drop_rules)
+    # 3. Ajout des règles de drop (sans sauts de ligne au milieu de la commande)
+    lines.extend(
+        [
+            (
+                f"add rule inet {table} {chain} ip saddr @{s4_host} "
+                f"counter name {counter_v4} drop"
+            ),
+            (
+                f"add rule inet {table} {chain} ip saddr @{s4_net} "
+                f"counter name {counter_v4} drop"
+            ),
+            (
+                f"add rule inet {table} {chain} ip6 saddr @{s6_host} "
+                f"counter name {counter_v6} drop"
+            ),
+            (
+                f"add rule inet {table} {chain} ip6 saddr @{s6_net} "
+                f"counter name {counter_v6} drop"
+            ),
+        ]
+    )
 
     # 4. Fonction optimisée pour injecter les éléments par "lots" (batches)
     def add_elements(name, elems, chunk_size=1000):
@@ -381,7 +399,6 @@ counter name {counter_v6} drop
         for i in range(0, len(elems), chunk_size):
             # Prendre une tranche (slice) de 1000 éléments
             batch = elems[i : i + chunk_size]
-            # Concaténer rapidement via la méthode C native de Python (.join)
             joined_batch = ", ".join(batch)
             lines.append(f"add element inet {table} {name} {{ {joined_batch} }}")
 
@@ -391,6 +408,7 @@ counter name {counter_v6} drop
     add_elements(s6_host, v6_hosts)
     add_elements(s6_net, v6_nets)
 
+    # Ajout du saut de ligne final global
     return "\n".join(lines) + "\n"
 
 
