@@ -35,11 +35,18 @@ IPV6_REGEX="(?:(?:[0-9a-f]{1,4}:){7,7}[0-9a-f]{1,4}|\
 
 function exists() { command -v "$1" >/dev/null 2>&1; }
 function count_entries() { awk 'END { print NR }' "$1"; }
+PYTHON3_BIN=''
+if exists python3; then
+	PYTHON3_BIN=$(command -v python3)
+elif [[ -x /usr/bin/python3 ]]; then
+	PYTHON3_BIN=/usr/bin/python3
+fi
+
 function collapse_prefixes_python() {
 	local input_file=$1
 	local output_file=$2
 	local family=$3
-	python3 - "${input_file}" "${output_file}" "${family}" <<'PY'
+	"${PYTHON3_BIN}" - "${input_file}" "${output_file}" "${family}" <<'PY'
 import ipaddress
 import sys
 
@@ -192,7 +199,7 @@ fi
 
 # Final canonicalization pass: removes duplicates and overlaps
 # (e.g. an IP already covered by a CIDR) to avoid nft EEXIST failures.
-if exists python3; then
+if [[ -n ${PYTHON3_BIN} ]]; then
 	IP_BLACKLIST_COLLAPSED_TMP_FILE=$(mktemp -t nft-blacklist-ip-collapsed-XXX)
 	IP6_BLACKLIST_COLLAPSED_TMP_FILE=$(mktemp -t nft-blacklist-ip6-collapsed-XXX)
 	if collapse_prefixes_python "${IP_BLACKLIST_FILE}" "${IP_BLACKLIST_COLLAPSED_TMP_FILE}" 4; then
@@ -202,8 +209,9 @@ if exists python3; then
 		cp "${IP6_BLACKLIST_COLLAPSED_TMP_FILE}" "${IP6_BLACKLIST_FILE}"
 	fi
 	((KEEP_TMP_FILES)) || rm -f "${IP_BLACKLIST_COLLAPSED_TMP_FILE}" "${IP6_BLACKLIST_COLLAPSED_TMP_FILE}"
-elif ((VERBOSE)); then
-	echo >&2 "Warning: python3 is not available; skipping final overlap collapse"
+else
+	echo >&2 "Error: python3 is required for final overlap collapse but was not found in PATH or /usr/bin/python3"
+	exit 1
 fi
 
 ((KEEP_TMP_FILES)) || rm -f "${IP_BLACKLIST_TMP_FILE}" "${IP6_BLACKLIST_TMP_FILE}"
