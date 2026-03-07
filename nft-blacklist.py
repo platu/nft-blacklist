@@ -39,7 +39,7 @@ OUTPUT_DEFAULT = "/var/cache/nft-blacklist/blacklist.nft"
 
 
 def parse_conf(path: Path) -> dict:
-    """Charge la configuration TOML."""
+    """Load TOML configuration."""
     with open(path, "rb") as f:
         return tomllib.load(f)
 
@@ -68,12 +68,12 @@ def parse_whitelist(value):
 def fetch_urls(urls, timeout=10):
     user_agent = {"User-Agent": USER_AGENT}
 
-    # Utilisation d'une session pour le Connection Pooling (plus rapide)
+    # Reuse one session for connection pooling (faster).
     session = requests.Session()
     session.headers.update(user_agent)
 
     def fetch_single(url: str) -> list[str]:
-        """Fonction locale pour traiter une seule URL."""
+        """Local helper to fetch one URL."""
         parsed = urlparse(url)
         if parsed.scheme == "file":
             path = Path(unquote(parsed.path))
@@ -86,18 +86,18 @@ def fetch_urls(urls, timeout=10):
 
         try:
             r = session.get(url, timeout=timeout)
-            # Leve une exception pour tout code d'erreur HTTP (404, 500, etc.)
+            # Raise for HTTP errors (404, 500, etc.).
             r.raise_for_status()
             return r.text.splitlines()
         except requests.RequestException as exc:
             print(f"# warning: {url} -> {exc}", file=sys.stderr)
             return []
 
-    # Parallélisation des téléchargements avec 5 workers (threads)
+    # Fetch URLs in parallel using 5 worker threads.
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         for lines in executor.map(fetch_single, urls):
             for line in lines:
-                # Nettoie et ignore les lignes vides.
+                # Trim and ignore empty lines.
                 if line_stripped := line.strip():
                     yield line_stripped
 
@@ -107,34 +107,34 @@ def parse_ips(
 ) -> tuple[list[ipaddress.IPv4Network], list[ipaddress.IPv6Network]]:
     v4, v6 = [], []
     for line in lines:
-        # Nettoyage des commentaires et espaces
+        # Remove trailing comments and surrounding whitespace.
         line = line.split("#")[0].split(";")[0].split("$")[0].strip()
         if not line:
             continue
 
-        # Extraction du premier élément qui ressemble à une IP/Réseau
-        # (souvent les listes contiennent "IP commentaire")
+        # Take the first token that looks like an IP/network.
+        # Many lists include "IP comment" style lines.
         token = line.split()[0]
 
         try:
-            # ipaddress gere les IP seules (converties en /32 ou /128).
-            # et les réseaux. strict=False permet d'accepter "192.168.0.1/24"
-            # et de le convertir en "192.168.0.0/24" silencieusement.
+            # ipaddress handles host IPs (converted to /32 or /128)
+            # and networks. strict=False allows values like
+            # "192.168.0.1/24" and normalizes them to "192.168.0.0/24".
             net = ipaddress.ip_network(token, strict=False)
             if net.version == 4:
                 v4.append(net)
             else:
                 v6.append(net)
         except ValueError:
-            # Ignorer les tokens non IP (ex: domaine ou format inconnu).
+            # Ignore non-IP tokens (e.g., domain names or unknown formats).
             continue
 
     return v4, v6
 
 
 def drop_reserved(v4_list, v6_list):
-    # .is_private et .is_link_local sont des attributs beaucoup plus rapides
-    # que subnet_of() itéré sur une liste.
+    # .is_private/.is_link_local checks are faster than repeatedly
+    # using subnet_of() against reserved-range lists.
     v4_filtered = [
         n
         for n in v4_list
@@ -149,19 +149,16 @@ def drop_reserved(v4_list, v6_list):
 
 
 def collapse_family(nets, version, do_optimize=True):
-    # 1. Ne garder que la bonne version
+    # 1. Keep only the requested IP version.
     filtered_nets = [n for n in nets if n.version == version]
 
-    # 2. Dé-duplication rapide (Set)
-    # Convertir en ensemble élimine instantanément les doublons stricts.
+    # 2. Fast deduplication via set().
     unique_nets = set(filtered_nets)
 
-    # 3. Tri (Crucial pour les performances de collapse_addresses)
-    # ipaddress.collapse_addresses s'attend à un itérable. Le fait de lui
-    # fournir une liste déjà triée réduit énormément sa complexité temporelle.
+    # 3. Sort before collapsing for better collapse_addresses performance.
     sorted_nets = sorted(list(unique_nets))
 
-    # 4. Collapse (fusion des sous-réseaux)
+    # 4. Collapse overlapping/adjacent networks.
     if do_optimize:
         collapsed = list(ipaddress.collapse_addresses(sorted_nets))
     else:
@@ -170,7 +167,7 @@ def collapse_family(nets, version, do_optimize=True):
     hosts = []
     nets_out = []
 
-    # 5. Séparation Hôtes (/32 ou /128) vs Réseaux
+    # 5. Split hosts (/32 or /128) from network ranges.
     for net in collapsed:
         if (version == 4 and net.prefixlen == 32) or (
             version == 6 and net.prefixlen == 128
@@ -189,7 +186,7 @@ def run_subprocess(
     check: bool = True,
     input_data: str | None = None,
 ) -> subprocess.CompletedProcess:
-    """Execute une commande subprocess avec gestion d'erreurs standardisee."""
+    """Run a subprocess command with standardized error handling."""
     try:
         if capture_output:
             result = subprocess.run(  # nosec B603
@@ -214,7 +211,7 @@ def run_subprocess(
         print(f"{error_msg}: {details}", file=sys.stderr)
         sys.exit(1)
     except FileNotFoundError:
-        print(f"Commande non trouvee : {cmd[0]}", file=sys.stderr)
+        print(f"Command not found: {cmd[0]}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -240,11 +237,11 @@ def _expand_element_line(line: str) -> list[str]:
 
 
 def _run_nft_inline(nft_cmd: str, payload: str):
-    """Exécute nft via stdin au lieu d'utiliser des fichiers sur le disque."""
+    """Run nft via stdin instead of writing temporary files."""
     cmd = shlex.split(nft_cmd) + ["-f", "-"]
     return run_subprocess(
         cmd,
-        error_msg="Erreur lors de l'execution de nft via stdin",
+        error_msg="Failed to execute nft via stdin",
         capture_output=True,
         check=False,
         input_data=payload,
@@ -252,7 +249,7 @@ def _run_nft_inline(nft_cmd: str, payload: str):
 
 
 def apply_ruleset(ruleset: str, nft_cmd: str, verbose=False):
-    # 1. Tentative d'application globale (très rapide)
+    # 1. First try a full bulk apply (fast path).
     result = _run_nft_inline(nft_cmd, ruleset)
     if result.returncode == 0:
         return
@@ -267,7 +264,7 @@ def apply_ruleset(ruleset: str, nft_cmd: str, verbose=False):
             file=sys.stderr,
         )
 
-    # 2. Mode Fallback
+    # 2. Fallback mode.
     lines = ruleset.splitlines()
     base_lines = [
         line for line in lines if not line.startswith(ADD_ELEMENT_PREFIX)
@@ -276,17 +273,17 @@ def apply_ruleset(ruleset: str, nft_cmd: str, verbose=False):
         line for line in lines if line.startswith(ADD_ELEMENT_PREFIX)
     ]
 
-    # On applique d'abord la structure (tables, chains, sets vides)
+    # Apply base structure first (tables/chains/empty sets).
     base_result = _run_nft_inline(nft_cmd, "\n".join(base_lines) + "\n")
     if base_result.returncode != 0:
         msg = (base_result.stderr or "") + (base_result.stdout or "")
         raise RuntimeError(msg.strip() or "failed to apply base nft ruleset")
 
-    # Appliquer ensuite les blocs (chunks de 60 000 caracteres).
+    # Then apply element chunks (~60,000 chars each).
     for chunk in element_lines:
         chunk_result = _run_nft_inline(nft_cmd, chunk + "\n")
 
-        # Si un bloc echoue, inserer element par element pour ce bloc.
+        # If a chunk fails, retry element by element for this chunk.
         if chunk_result.returncode != 0:
             if verbose:
                 print(
@@ -332,7 +329,7 @@ def generate_ruleset(
     s6_host = f"{set_pref}_v6_host"
     s6_net = f"{set_pref}_v6_net"
 
-    # Use chain lists to manage linefeeds
+    # Build command lines explicitly to avoid accidental line breaks.
     base_lines = [
         f"# Generated {created_at}",
         f"add table inet {table}",
@@ -366,7 +363,7 @@ def generate_ruleset(
 
     lines = base_lines
 
-    # 2. Ajout des listes blanches si elles existent
+    # 2. Add whitelist rules when provided.
     if v4_whitelist:
         lines.append(
             f"add rule inet {table} {chain} "
@@ -378,7 +375,7 @@ def generate_ruleset(
             f"ip6 saddr {{ {', '.join(v6_whitelist)} }} accept"
         )
 
-    # 3. Ajout des règles de drop (sans sauts de ligne au milieu de la commande)
+    # 3. Add drop rules (single line per nft command).
     lines.extend(
         [
             (
@@ -400,27 +397,27 @@ def generate_ruleset(
         ]
     )
 
-    # 4. Fonction optimisée pour injecter les éléments par "lots" (batches)
+    # 4. Append set elements in batches.
     def add_elements(name, elems, chunk_size=1000):
         if not elems:
             return
 
-        # Parcourir la liste par sauts de `chunk_size`
+        # Walk the list by chunk_size steps.
         for i in range(0, len(elems), chunk_size):
-            # Prendre une tranche (slice) de 1000 éléments
+            # Slice one batch.
             batch = elems[i : i + chunk_size]
             joined_batch = ", ".join(batch)
             lines.append(
                 f"add element inet {table} {name} {{ {joined_batch} }}"
             )
 
-    # 5. Injection des adresses
+    # 5. Inject addresses into their target sets.
     add_elements(s4_host, v4_hosts)
     add_elements(s4_net, v4_nets)
     add_elements(s6_host, v6_hosts)
     add_elements(s6_net, v6_nets)
 
-    # Ajout du saut de ligne final global
+    # Keep a trailing newline in the generated ruleset file.
     return "\n".join(lines) + "\n"
 
 
@@ -452,21 +449,21 @@ def main():
     cfg_path = Path(args.config)
     cfg = parse_conf(cfg_path)
 
-    # Récupération directe des valeurs TOML (types natifs)
+    # Read TOML values directly (native types).
     urls = cfg.get("BLACKLISTS", [])
     table = cfg.get("TABLE", "blackhole")
     chain = cfg.get("CHAIN", "input")
     hook = cfg.get("HOOK", "input")
 
-    # Plus besoin de parse_whitelist, TOML fournit déjà une liste !
+    # No parse_whitelist needed: TOML already yields lists.
     v4_whitelist = cfg.get("IP_WHITELIST", [])
     v6_whitelist = cfg.get("IP6_WHITELIST", [])
 
-    # Plus besoin de parse_bool, TOML fournit déjà un booléen (True/False) !
+    # No parse_bool needed: TOML already yields booleans.
     dry_run = cfg.get("DRY_RUN", False)
     verbose = cfg.get("VERBOSE", False)
 
-    # Nouvelle ligne : récupérer l'option de consolidation
+    # Optional CIDR optimization toggle.
     do_optimize_cidr = cfg.get("DO_OPTIMIZE_CIDR", True)
 
     nft_cmd = args.nft or cfg.get("NFT", "nft")
@@ -475,7 +472,7 @@ def main():
     v4, v6 = parse_ips(raw_lines)
     v4, v6 = drop_reserved(v4, v6)
 
-    # Passer le flag d'optimisation
+    # Pass optimization flag to family collapse.
     v4_hosts, v4_nets = collapse_family(v4, 4, do_optimize=do_optimize_cidr)
     v6_hosts, v6_nets = collapse_family(v6, 6, do_optimize=do_optimize_cidr)
 
@@ -493,7 +490,7 @@ def main():
     output_path = Path(args.output)
     output_path.parent.mkdir(
         parents=True, exist_ok=True
-    )  # Sécurité pour créer le dossier
+    )  # Ensure output directory exists.
     output_path.write_text(ruleset, encoding="utf-8")
 
     should_apply = args.apply if args.apply is not None else (not dry_run)
