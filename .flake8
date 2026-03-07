@@ -1,0 +1,6 @@
+[flake8]
+# Black-compatible Flake8 settings.
+# E203 conflicts with Black's formatting for slices (e.g. a[i : j]).
+extend-ignore = E203
+# Keep in sync with Black's default line length.
+max-line-length = 88
