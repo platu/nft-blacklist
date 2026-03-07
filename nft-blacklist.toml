@@ -27,6 +27,6 @@ BLACKLISTS = [
 TABLE = "blackhole"
 
 # Options (booléens natifs)
-DO_OPTIMIZE_CIDR = false
+DO_OPTIMIZE_CIDR = true
 DRY_RUN = false
 VERBOSE = true

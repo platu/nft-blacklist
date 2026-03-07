@@ -6,7 +6,6 @@ import re
 import shlex
 import subprocess  # nosec B404
 import sys
-import tempfile
 import time
 import tomllib
 from pathlib import Path
@@ -203,9 +202,50 @@ def collapse_family(nets, version, do_optimize=True):
     return hosts, nets_out
 
 
+def run_subprocess(
+    cmd: list[str],
+    error_msg: str,
+    capture_output: bool = False,
+    check: bool = True,
+    input_data: str | None = None,
+) -> subprocess.CompletedProcess:
+    """Execute une commande subprocess avec gestion d'erreurs standardisee."""
+    try:
+        if capture_output:
+            result = subprocess.run(  # nosec B603
+                cmd,
+                capture_output=True,
+                input=input_data,
+                text=True,
+                check=check,
+            )
+        else:
+            result = subprocess.run(  # nosec B603
+                cmd,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+                input=input_data,
+                text=True,
+                check=check,
+            )
+        return result
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or str(exc)).strip()
+        print(f"{error_msg}: {details}", file=sys.stderr)
+        sys.exit(1)
+    except FileNotFoundError:
+        print(f"Commande non trouvee : {cmd[0]}", file=sys.stderr)
+        sys.exit(1)
+
+
 def _run_nft_file(nft_cmd: str, ruleset_path: Path):
     cmd = shlex.split(nft_cmd) + ["-f", str(ruleset_path)]
-    return subprocess.run(cmd, text=True, capture_output=True)  # nosec B603
+    return run_subprocess(
+        cmd,
+        error_msg="Erreur lors de l'execution de nft via fichier",
+        capture_output=True,
+        check=False,
+    )
 
 
 def _expand_element_line(line: str) -> list[str]:
@@ -228,85 +268,68 @@ def _expand_element_line(line: str) -> list[str]:
     ]
 
 
+def _run_nft_inline(nft_cmd: str, payload: str):
+    """Exécute nft via stdin au lieu d'utiliser des fichiers sur le disque."""
+    cmd = shlex.split(nft_cmd) + ["-f", "-"]
+    return run_subprocess(
+        cmd,
+        error_msg="Erreur lors de l'execution de nft via stdin",
+        capture_output=True,
+        check=False,
+        input_data=payload,
+    )
+
+
 def apply_ruleset(ruleset: str, nft_cmd: str, verbose=False):
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", suffix=".nft", delete=False
-    ) as tmp:
-        tmp.write(ruleset)
-        tmp_path = Path(tmp.name)
+    # 1. Tentative d'application globale (très rapide)
+    result = _run_nft_inline(nft_cmd, ruleset)
+    if result.returncode == 0:
+        return
 
-    try:
-        result = _run_nft_file(nft_cmd, tmp_path)
-        if result.returncode == 0:
-            return
+    stderr = (result.stderr or "") + (result.stdout or "")
+    if "File exists" not in stderr:
+        raise RuntimeError(stderr.strip() or "failed to apply nft ruleset")
 
-        stderr = (result.stderr or "") + (result.stdout or "")
-        if "File exists" not in stderr:
-            raise RuntimeError(stderr.strip() or "failed to apply nft ruleset")
+    if verbose:
+        print(
+            "Bulk apply hit existing elements; retrying chunk by chunk...",
+            file=sys.stderr,
+        )
 
-        if verbose:
-            print(
-                "Bulk apply hit existing elements; retrying with fallback mode...",
-                file=sys.stderr,
-            )
+    # 2. Mode Fallback
+    lines = ruleset.splitlines()
+    base_lines = [line for line in lines if not line.startswith("add element inet ")]
+    element_lines = [line for line in lines if line.startswith("add element inet ")]
 
-        lines = ruleset.splitlines()
-        base_lines = [
-            line_text
-            for line_text in lines
-            if not line_text.startswith("add element inet ")
-        ]
-        element_lines = [
-            line_text
-            for line_text in lines
-            if line_text.startswith("add element inet ")
-        ]
+    # On applique d'abord la structure (tables, chains, sets vides)
+    base_result = _run_nft_inline(nft_cmd, "\n".join(base_lines) + "\n")
+    if base_result.returncode != 0:
+        msg = (base_result.stderr or "") + (base_result.stdout or "")
+        raise RuntimeError(msg.strip() or "failed to apply base nft ruleset")
 
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", suffix=".nft", delete=False
-        ) as base_tmp:
-            base_tmp.write("\n".join(base_lines) + "\n")
-            base_path = Path(base_tmp.name)
+    # On applique ensuite par blocs (les fameux chunks de 60 000 caractères de generate_ruleset)
+    for chunk in element_lines:
+        chunk_result = _run_nft_inline(nft_cmd, chunk + "\n")
 
-        one_path = None
-        try:
-            base_result = _run_nft_file(nft_cmd, base_path)
-            if base_result.returncode != 0:
-                msg = (base_result.stderr or "") + (base_result.stdout or "")
-                raise RuntimeError(msg.strip() or "failed to apply base nft ruleset")
+        # Si un bloc échoue, on passe à l'insertion élément par élément uniquement pour ce bloc
+        if chunk_result.returncode != 0:
+            if verbose:
+                print(
+                    "A chunk failed, expanding to individual elements...",
+                    file=sys.stderr,
+                )
 
-            for bulk_element in element_lines:
-                for element in _expand_element_line(bulk_element):
-                    with tempfile.NamedTemporaryFile(
-                        "w", encoding="utf-8", suffix=".nft", delete=False
-                    ) as one_tmp:
-                        one_tmp.write(element + "\n")
-                        one_path = Path(one_tmp.name)
-
-                    try:
-                        elem_result = _run_nft_file(nft_cmd, one_path)
-                    finally:
-                        one_path.unlink(missing_ok=True)
-
-                    if elem_result.returncode != 0:
-                        elem_msg = (elem_result.stderr or "") + (
-                            elem_result.stdout or ""
+            for element in _expand_element_line(chunk):
+                elem_result = _run_nft_inline(nft_cmd, element + "\n")
+                if elem_result.returncode != 0 and verbose:
+                    elem_msg = (elem_result.stderr or "") + (elem_result.stdout or "")
+                    if "File exists" in elem_msg:
+                        print(f"Skipping existing element: {element}", file=sys.stderr)
+                    else:
+                        print(
+                            f"Error on element {element}: {elem_msg.strip()}",
+                            file=sys.stderr,
                         )
-                        if "File exists" in elem_msg:
-                            if verbose:
-                                print(
-                                    f"Skipping existing element: {element}",
-                                    file=sys.stderr,
-                                )
-                            continue
-                        raise RuntimeError(
-                            (elem_msg.strip() + "\n" if elem_msg.strip() else "")
-                            + f"failed to apply ruleset element: {element}"
-                        )
-        finally:
-            base_path.unlink(missing_ok=True)
-    finally:
-        tmp_path.unlink(missing_ok=True)
 
 
 def generate_ruleset(
