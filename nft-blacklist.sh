@@ -256,32 +256,28 @@ EOF
 
 if [[ -s ${IP_BLACKLIST_FILE} ]]; then
 	IP_V4_ELEMENTS_RAW_TMP_FILE=$(mktemp -t nft-blacklist-ipv4-elements-raw-XXX)
-	IP_V4_ELEMENTS_CLEAN_TMP_FILE=$(mktemp -t nft-blacklist-ipv4-elements-clean-XXX)
 	IP_V4_ELEMENTS_NORM_TMP_FILE=$(mktemp -t nft-blacklist-ipv4-elements-norm-XXX)
 	tr -d '\r' <"${IP_BLACKLIST_FILE}" >"${IP_V4_ELEMENTS_RAW_TMP_FILE}"
-	sed -r -e '/^[[:space:]]*([#;$]|$)/d' -e 's/[[:space:]]+$//' -e 's#/32$##' "${IP_V4_ELEMENTS_RAW_TMP_FILE}" >"${IP_V4_ELEMENTS_CLEAN_TMP_FILE}"
-	sort -u "${IP_V4_ELEMENTS_CLEAN_TMP_FILE}" >"${IP_V4_ELEMENTS_NORM_TMP_FILE}"
+	sed -r -e '/^[[:space:]]*([#;$]|$)/d' -e 's/[[:space:]]+$//' -e 's#/32$##' "${IP_V4_ELEMENTS_RAW_TMP_FILE}" >"${IP_V4_ELEMENTS_NORM_TMP_FILE}"
 	{
 		echo "add element inet ${TABLE} ${SET_NAME_V4} {"
 		sed -r 's#^(.*)$#  \1,#' "${IP_V4_ELEMENTS_NORM_TMP_FILE}"
 		echo "}"
 	} >>"${RULESET_FILE}"
-	((KEEP_TMP_FILES)) || rm -f "${IP_V4_ELEMENTS_RAW_TMP_FILE}" "${IP_V4_ELEMENTS_CLEAN_TMP_FILE}" "${IP_V4_ELEMENTS_NORM_TMP_FILE}"
+	((KEEP_TMP_FILES)) || rm -f "${IP_V4_ELEMENTS_RAW_TMP_FILE}" "${IP_V4_ELEMENTS_NORM_TMP_FILE}"
 fi
 
 if [[ -s ${IP6_BLACKLIST_FILE} ]]; then
 	IP_V6_ELEMENTS_RAW_TMP_FILE=$(mktemp -t nft-blacklist-ipv6-elements-raw-XXX)
-	IP_V6_ELEMENTS_CLEAN_TMP_FILE=$(mktemp -t nft-blacklist-ipv6-elements-clean-XXX)
 	IP_V6_ELEMENTS_NORM_TMP_FILE=$(mktemp -t nft-blacklist-ipv6-elements-norm-XXX)
 	tr -d '\r' <"${IP6_BLACKLIST_FILE}" >"${IP_V6_ELEMENTS_RAW_TMP_FILE}"
-	sed -r -e '/^[[:space:]]*([#;$]|$)/d' -e 's/[[:space:]]+$//' -e 's#/128$##I' "${IP_V6_ELEMENTS_RAW_TMP_FILE}" >"${IP_V6_ELEMENTS_CLEAN_TMP_FILE}"
-	sort -fu "${IP_V6_ELEMENTS_CLEAN_TMP_FILE}" >"${IP_V6_ELEMENTS_NORM_TMP_FILE}"
+	sed -r -e '/^[[:space:]]*([#;$]|$)/d' -e 's/[[:space:]]+$//' -e 's#/128$##I' "${IP_V6_ELEMENTS_RAW_TMP_FILE}" >"${IP_V6_ELEMENTS_NORM_TMP_FILE}"
 	{
 		echo "add element inet ${TABLE} ${SET_NAME_V6} {"
 		sed -r 's#^(.*)$#  \1,#' "${IP_V6_ELEMENTS_NORM_TMP_FILE}"
 		echo "}"
 	} >>"${RULESET_FILE}"
-	((KEEP_TMP_FILES)) || rm -f "${IP_V6_ELEMENTS_RAW_TMP_FILE}" "${IP_V6_ELEMENTS_CLEAN_TMP_FILE}" "${IP_V6_ELEMENTS_NORM_TMP_FILE}"
+	((KEEP_TMP_FILES)) || rm -f "${IP_V6_ELEMENTS_RAW_TMP_FILE}" "${IP_V6_ELEMENTS_NORM_TMP_FILE}"
 fi
 
 if ((!DRY_RUN)); then
