@@ -1,10 +1,12 @@
 # nft-blacklist
 
-The aim of this fork is to update and enhance the original project. It replaces shell parsing with a typed Python implementation and uses the TOML configuration format. It also incorporates safer nftables application logic, including the ability to apply in bulk with graceful fallback when elements already exist. The ipAddress Python module is used extensively to verify against address conflicts or duplication. The intention is to maintain the same operational purpose while improving maintainability.
-
 `nft-blacklist` builds and applies nftables sets from public IP blocklists.
 
-The current implementation is Python-based (`nft-blacklist.py`) and keeps the core workflow: fetch blocklists, parse and normalize IP/CIDR entries, collapse ranges, generate an nft ruleset, and optionally apply it.
+This repository uses a Python implementation (`nft-blacklist.py`) with TOML configuration (`nft-blacklist.toml`). It keeps the same operational goal while improving maintainability, parsing robustness, and nftables application safety (including bulk apply with graceful fallback when elements already exist).
+
+For high-volume filtering with lower resource consumption, you can place blacklist drops in a dedicated chain in the nftables `raw` table. Since `raw` is evaluated before connection tracking, matching packets are dropped early in a stateless path, avoiding unnecessary `conntrack` lookups and reducing CPU overhead under noisy or abusive traffic.
+
+Core workflow: fetch blocklists, parse and normalize IP/CIDR entries, collapse ranges, generate an nft ruleset, and optionally apply it.
 
 ## Features
 
@@ -24,10 +26,6 @@ The current implementation is Python-based (`nft-blacklist.py`) and keeps the co
 - Linux with nftables (`nft` command).
 - Python 3.11+ (uses `tomllib` from the standard library).
 - Python package: `requests`.
-
-```sh
-sudo apt install python3-requests
-```
 
 ## Quick Start
 
@@ -73,9 +71,10 @@ sudo /usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.toml --
 The script reads a TOML file and supports these keys:
 
 - `BLACKLISTS` (`list[str]`, required)
-- `TABLE` (default: `blackhole`)
-- `CHAIN` (default: `input`)
-- `HOOK` (default: `input`)
+- `TABLE` (`str`, default: `blackhole`, recommended profile: `raw`)
+- `CHAIN` (`str`, default: `input`, recommended profile: `prerouting`)
+- `HOOK` (`str`, default: `input`, recommended profile: `prerouting`)
+- `PRIORITY` (`str`, default: `filter - 1`, recommended profile: `raw`)
 - `IP_WHITELIST` (`list[str]`)
 - `IP6_WHITELIST` (`list[str]`)
 - `DO_OPTIMIZE_CIDR` (`bool`, default: `true`)
@@ -86,6 +85,8 @@ The script reads a TOML file and supports these keys:
 Notes:
 
 - `BLACKLISTS` accepts URLs and local files via `file:///path/to/list`.
+- Runtime defaults are kept for backward compatibility.
+- For stateless pre-conntrack filtering, use `TABLE="raw"`, `CHAIN="prerouting"`, `HOOK="prerouting"`, and `PRIORITY="raw"`.
 - `DRY_RUN=true` means generate only; `DRY_RUN=false` means apply after generation.
 - CLI flags `--apply` and `--no-apply` override `DRY_RUN`.
 
@@ -97,9 +98,10 @@ BLACKLISTS = [
   "https://www.spamhaus.org/drop/dropv6.txt",
 ]
 
-TABLE = "blackhole"
-CHAIN = "input"
-HOOK = "input"
+TABLE = "raw"
+CHAIN = "prerouting"
+HOOK = "prerouting"
+PRIORITY = "raw"
 
 IP_WHITELIST = ["192.0.2.0/24"]
 IP6_WHITELIST = ["fd00::/8"]
@@ -122,19 +124,19 @@ MAILTO=root
 ## Check Dropped Packets
 
 ```sh
-sudo nft list counter inet blackhole blacklist_v4
-sudo nft list counter inet blackhole blacklist_v6
+sudo nft list counter inet raw blacklist_v4
+sudo nft list counter inet raw blacklist_v6
 ```
 
 ## Blacklist Sources
 
-Edit `BLACKLISTS` in `nft-blacklist.conf` to add/remove providers:
+Edit `BLACKLISTS` in `nft-blacklist.toml` to add/remove providers:
 
-```sh
-BLACKLISTS=(
-    "https://example.org/blacklist.txt"
-    "file:///etc/nft-blacklist/custom.list"
-)
+```toml
+BLACKLISTS = [
+  "https://example.org/blacklist.txt",
+  "file:///etc/nft-blacklist/custom.list",
+]
 ```
 
 For country or ASN aggregated lists, you can use providers such as IPverse and FireHOL feeds.
