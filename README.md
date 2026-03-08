@@ -1,22 +1,17 @@
 # nft-blacklist
 
+The aim of this fork is to update and enhance the original project. It replaces shell parsing with a typed Python implementation and uses the TOML configuration format. It also incorporates safer nftables application logic, including the ability to apply in bulk with graceful fallback when elements already exist. The ipAddress Python module is used extensively to verify against address conflicts or duplication. The intention is to maintain the same operational purpose while improving maintainability.
+
 `nft-blacklist` builds and applies nftables sets from public IP blocklists.
 
-This project has migrated from a Bash implementation to a Python implementation with the same goal and the same core feature set: fetch blacklists, normalize and collapse CIDRs, keep IPv4/IPv6 whitelists, generate an nft ruleset, and optionally apply it.
-
-## Migration Summary
-
-- Old entrypoint: `nft-blacklist.sh`
-- New entrypoint: `nft-blacklist.py`
-- Config format: still Bash-style `KEY=value` and arrays (for example `BLACKLISTS=(...)`)
-- Ruleset behavior: same table/chain/set/counter model for IPv4 and IPv6
+The current implementation is Python-based (`nft-blacklist.py`) and keeps the core workflow: fetch blocklists, parse and normalize IP/CIDR entries, collapse ranges, generate an nft ruleset, and optionally apply it.
 
 ## Features
 
 - IPv4 and IPv6 blacklist ingestion from multiple sources.
 - Supports `http(s)://` and `file://` blacklist URLs.
 - Tolerant parser for noisy feeds (extracts leading IP/CIDR tokens even with trailing metadata).
-- Filters reserved/local ranges:
+- Filters reserved/local ranges before rule generation:
   - IPv4: `0.0.0.0/8`, `10.0.0.0/8`, `127.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, multicast and reserved ranges.
   - IPv6: link-local `fe80::/10`.
 - Canonicalization and overlap removal using Python `ipaddress.collapse_addresses`.
@@ -27,8 +22,8 @@ This project has migrated from a Bash implementation to a Python implementation 
 ## Requirements
 
 - Linux with nftables (`nft` command).
-- Python 3.
-- Python package `requests`.
+- Python 3.11+ (uses `tomllib` from the standard library).
+- Python package: `requests`.
 
 ```sh
 sudo apt install python3-requests
@@ -40,16 +35,16 @@ sudo apt install python3-requests
 
 ```sh
 install -m 0755 nft-blacklist.py /usr/local/bin/nft-blacklist.py
-install -m 0644 nft-blacklist.conf /etc/nft-blacklist/nft-blacklist.conf
+install -m 0644 nft-blacklist.toml /etc/nft-blacklist/nft-blacklist.toml
 mkdir -p /var/cache/nft-blacklist
 ```
 
-2. Edit `/etc/nft-blacklist/nft-blacklist.conf`.
+2. Edit `/etc/nft-blacklist/nft-blacklist.toml`.
 
 3. Run:
 
 ```sh
-sudo /usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.conf
+sudo /usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.toml
 ```
 
 By default, the generated ruleset file is written to `/var/cache/nft-blacklist/blacklist.nft`.
@@ -64,34 +59,55 @@ Examples:
 
 ```sh
 # Generate and apply (default when DRY_RUN=no)
-sudo /usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.conf
+sudo /usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.toml
 
 # Generate only, do not apply
-/usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.conf --no-apply
+/usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.toml --no-apply
 
 # Use custom nft command
-sudo /usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.conf --nft "sudo /sbin/nft"
+sudo /usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.toml --nft "sudo /sbin/nft"
 ```
 
 ## Configuration
 
-The Python script reads a Bash-style config file and supports these keys:
+The script reads a TOML file and supports these keys:
 
-- `BLACKLISTS` (array, required)
+- `BLACKLISTS` (`list[str]`, required)
 - `TABLE` (default: `blackhole`)
 - `CHAIN` (default: `input`)
 - `HOOK` (default: `input`)
-- `IP_WHITELIST` (comma-separated string)
-- `IP6_WHITELIST` (comma-separated string)
-- `DRY_RUN` (`yes/no`, `true/false`, `1/0`)
-- `VERBOSE` (`yes/no`, `true/false`, `1/0`)
+- `IP_WHITELIST` (`list[str]`)
+- `IP6_WHITELIST` (`list[str]`)
+- `DO_OPTIMIZE_CIDR` (`bool`, default: `true`)
+- `DRY_RUN` (`bool`, default: `false`)
+- `VERBOSE` (`bool`, default: `false`)
 - `NFT` (optional command override, for example `sudo /sbin/nft`)
 
 Notes:
 
 - `BLACKLISTS` accepts URLs and local files via `file:///path/to/list`.
-- `DRY_RUN=yes` means generate only; `DRY_RUN=no` means apply after generation.
+- `DRY_RUN=true` means generate only; `DRY_RUN=false` means apply after generation.
 - CLI flags `--apply` and `--no-apply` override `DRY_RUN`.
+
+Minimal example (`/etc/nft-blacklist/nft-blacklist.toml`):
+
+```toml
+BLACKLISTS = [
+  "https://www.spamhaus.org/drop/drop.lasso",
+  "https://www.spamhaus.org/drop/dropv6.txt",
+]
+
+TABLE = "blackhole"
+CHAIN = "input"
+HOOK = "input"
+
+IP_WHITELIST = ["192.0.2.0/24"]
+IP6_WHITELIST = ["fd00::/8"]
+
+DO_OPTIMIZE_CIDR = true
+DRY_RUN = false
+VERBOSE = true
+```
 
 ## Cron
 
@@ -100,7 +116,7 @@ Run once per day to refresh and apply:
 ```sh
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 MAILTO=root
-33 23 * * * root /usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.conf
+33 */6 * * * root /usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.toml
 ```
 
 ## Check Dropped Packets

@@ -2,28 +2,30 @@
 import argparse
 import concurrent.futures
 import ipaddress
+import logging
 import re
 import shlex
 import subprocess  # nosec B404
 import sys
 import time
 import tomllib
+from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 import requests
 
-PRIVATE_V4 = [
-    ipaddress.ip_network("0.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("224.0.0.0/4"),
-    ipaddress.ip_network("240.0.0.0/4"),
+PRIVATE_V4: list[ipaddress.IPv4Network] = [
+    ipaddress.IPv4Network("0.0.0.0/8"),
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("127.0.0.0/8"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+    ipaddress.IPv4Network("224.0.0.0/4"),
+    ipaddress.IPv4Network("240.0.0.0/4"),
 ]
-LINKLOCAL_V6 = [
-    ipaddress.ip_network("fe80::/10"),
+LINKLOCAL_V6: list[ipaddress.IPv6Network] = [
+    ipaddress.IPv6Network("fe80::/10"),
 ]
 
 # Match a leading IPv4/IPv6 token, optionally with a prefix length.
@@ -44,33 +46,13 @@ def parse_conf(path: Path) -> dict:
         return tomllib.load(f)
 
 
-def parse_bool(value, default=False):
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    s = str(value).strip().lower()
-    if s in {"1", "on", "true", "yes"}:
-        return True
-    if s in {"0", "off", "false", "no"}:
-        return False
-    return default
-
-
-def parse_whitelist(value):
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple)):
-        return [str(v).strip() for v in value if str(v).strip()]
-    return [part.strip() for part in str(value).split(",") if part.strip()]
-
-
-def fetch_urls(urls, timeout=10):
-    user_agent = {"User-Agent": USER_AGENT}
+def fetch_urls(urls: list[str], timeout: int = 10) -> Iterator[str]:
+    """Fetch all IP lists concurrently and yield stripped lines."""
+    user_agent_header = {"User-Agent": USER_AGENT}
 
     # Reuse one session for connection pooling (faster).
     session = requests.Session()
-    session.headers.update(user_agent)
+    session.headers.update(user_agent_header)
 
     def fetch_single(url: str) -> list[str]:
         """Local helper to fetch one URL."""
@@ -81,7 +63,7 @@ def fetch_urls(urls, timeout=10):
                 content = path.read_text(encoding="utf-8", errors="replace")
                 return content.splitlines()
             except OSError as exc:
-                print(f"# warning: {url} -> {exc}", file=sys.stderr)
+                logging.warning(f"File read error: {url} -> {exc}")
                 return []
 
         try:
@@ -90,7 +72,7 @@ def fetch_urls(urls, timeout=10):
             r.raise_for_status()
             return r.text.splitlines()
         except requests.RequestException as exc:
-            print(f"# warning: {url} -> {exc}", file=sys.stderr)
+            logging.warning(f"Download failed: {url} -> {exc}")
             return []
 
     # Fetch URLs in parallel using 5 worker threads.
@@ -105,7 +87,10 @@ def fetch_urls(urls, timeout=10):
 def parse_ips(
     lines: list[str],
 ) -> tuple[list[ipaddress.IPv4Network], list[ipaddress.IPv6Network]]:
-    v4, v6 = [], []
+    """Parse raw text lines into IPv4 and IPv6 network objects."""
+    v4: list[ipaddress.IPv4Network] = []
+    v6: list[ipaddress.IPv6Network] = []
+
     for line in lines:
         # Remove trailing comments and surrounding whitespace.
         line = line.split("#")[0].split(";")[0].split("$")[0].strip()
@@ -113,28 +98,25 @@ def parse_ips(
             continue
 
         # Take the first token that looks like an IP/network.
-        # Many lists include "IP comment" style lines.
         token = line.split()[0]
 
         try:
-            # ipaddress handles host IPs (converted to /32 or /128)
-            # and networks. strict=False allows values like
-            # "192.168.0.1/24" and normalizes them to "192.168.0.0/24".
             net = ipaddress.ip_network(token, strict=False)
             if net.version == 4:
-                v4.append(net)
+                v4.append(net)  # type: ignore
             else:
-                v6.append(net)
+                v6.append(net)  # type: ignore
         except ValueError:
-            # Ignore non-IP tokens (e.g., domain names or unknown formats).
+            # Ignore non-IP tokens.
             continue
 
     return v4, v6
 
 
-def drop_reserved(v4_list, v6_list):
-    # .is_private/.is_link_local checks are faster than repeatedly
-    # using subnet_of() against reserved-range lists.
+def drop_reserved(
+    v4_list: list[ipaddress.IPv4Network], v6_list: list[ipaddress.IPv6Network]
+) -> tuple[list[ipaddress.IPv4Network], list[ipaddress.IPv6Network]]:
+    """Filter out private, loopback, and multicast addresses."""
     v4_filtered = [
         n
         for n in v4_list
@@ -148,26 +130,22 @@ def drop_reserved(v4_list, v6_list):
     return v4_filtered, v6_filtered
 
 
-def collapse_family(nets, version, do_optimize=True):
-    # 1. Keep only the requested IP version.
+def collapse_family(
+    nets: list, version: int, do_optimize: bool = True
+) -> tuple[list[str], list[str]]:
+    """Deduplicate and optionally merge overlapping networks."""
     filtered_nets = [n for n in nets if n.version == version]
-
-    # 2. Fast deduplication via set().
     unique_nets = set(filtered_nets)
-
-    # 3. Sort before collapsing for better collapse_addresses performance.
     sorted_nets = sorted(list(unique_nets))
 
-    # 4. Collapse overlapping/adjacent networks.
     if do_optimize:
         collapsed = list(ipaddress.collapse_addresses(sorted_nets))
     else:
         collapsed = sorted_nets
 
-    hosts = []
-    nets_out = []
+    hosts: list[str] = []
+    nets_out: list[str] = []
 
-    # 5. Split hosts (/32 or /128) from network ranges.
     for net in collapsed:
         if (version == 4 and net.prefixlen == 32) or (
             version == 6 and net.prefixlen == 128
@@ -208,18 +186,15 @@ def run_subprocess(
         return result
     except subprocess.CalledProcessError as exc:
         details = (exc.stderr or str(exc)).strip()
-        print(f"{error_msg}: {details}", file=sys.stderr)
+        logging.error(f"{error_msg}: {details}")
         sys.exit(1)
     except FileNotFoundError:
-        print(f"Command not found: {cmd[0]}", file=sys.stderr)
+        logging.error(f"Command not found: {cmd[0]}")
         sys.exit(1)
 
 
 def _expand_element_line(line: str) -> list[str]:
-    """Expand a bulk add element command into one command per element.
-
-    If parsing fails, return the original line so fallback still works.
-    """
+    """Expand a bulk add element command into one command per element."""
     m = ELEMENT_LINE.match(line)
     if not m:
         return [line]
@@ -236,7 +211,7 @@ def _expand_element_line(line: str) -> list[str]:
     return expanded
 
 
-def _run_nft_inline(nft_cmd: str, payload: str):
+def _run_nft_inline(nft_cmd: str, payload: str) -> subprocess.CompletedProcess:
     """Run nft via stdin instead of writing temporary files."""
     cmd = shlex.split(nft_cmd) + ["-f", "-"]
     return run_subprocess(
@@ -248,23 +223,21 @@ def _run_nft_inline(nft_cmd: str, payload: str):
     )
 
 
-def apply_ruleset(ruleset: str, nft_cmd: str, verbose=False):
-    # 1. First try a full bulk apply (fast path).
+def apply_ruleset(ruleset: str, nft_cmd: str, verbose: bool = False) -> None:
+    """Apply the ruleset globally, with a graceful element-by-element fallback."""
     result = _run_nft_inline(nft_cmd, ruleset)
     if result.returncode == 0:
+        logging.info("Ruleset applied successfully in bulk.")
         return
 
     stderr = (result.stderr or "") + (result.stdout or "")
     if "File exists" not in stderr:
-        raise RuntimeError(stderr.strip() or "failed to apply nft ruleset")
+        raise RuntimeError(stderr.strip() or "Failed to apply nft ruleset.")
 
-    if verbose:
-        print(
-            "Bulk apply hit existing elements; retrying chunk by chunk...",
-            file=sys.stderr,
-        )
+    logging.info(
+        "Bulk apply hit existing elements; retrying chunk by chunk..."
+    )
 
-    # 2. Fallback mode.
     lines = ruleset.splitlines()
     base_lines = [
         line for line in lines if not line.startswith(ADD_ELEMENT_PREFIX)
@@ -273,53 +246,44 @@ def apply_ruleset(ruleset: str, nft_cmd: str, verbose=False):
         line for line in lines if line.startswith(ADD_ELEMENT_PREFIX)
     ]
 
-    # Apply base structure first (tables/chains/empty sets).
     base_result = _run_nft_inline(nft_cmd, "\n".join(base_lines) + "\n")
     if base_result.returncode != 0:
         msg = (base_result.stderr or "") + (base_result.stdout or "")
-        raise RuntimeError(msg.strip() or "failed to apply base nft ruleset")
+        raise RuntimeError(msg.strip() or "Failed to apply base nft ruleset.")
 
-    # Then apply element chunks (~60,000 chars each).
     for chunk in element_lines:
         chunk_result = _run_nft_inline(nft_cmd, chunk + "\n")
 
-        # If a chunk fails, retry element by element for this chunk.
         if chunk_result.returncode != 0:
-            if verbose:
-                print(
-                    "A chunk failed, expanding to individual elements...",
-                    file=sys.stderr,
-                )
+            logging.info("A chunk failed, expanding to individual elements...")
 
             for element in _expand_element_line(chunk):
                 elem_result = _run_nft_inline(nft_cmd, element + "\n")
-                if elem_result.returncode != 0 and verbose:
+                if elem_result.returncode != 0:
                     elem_msg = (elem_result.stderr or "") + (
                         elem_result.stdout or ""
                     )
                     if "File exists" in elem_msg:
-                        print(
-                            f"Skipping existing element: {element}",
-                            file=sys.stderr,
-                        )
+                        logging.debug(f"Skipping existing element: {element}")
                     else:
-                        print(
-                            f"Error on element {element}: {elem_msg.strip()}",
-                            file=sys.stderr,
+                        logging.error(
+                            f"Error on element {element}: {elem_msg.strip()}"
                         )
 
 
 def generate_ruleset(
-    table,
-    chain,
-    hook,
-    v4_hosts,
-    v4_nets,
-    v6_hosts,
-    v6_nets,
-    v4_whitelist=None,
-    v6_whitelist=None,
-):
+    table: str,
+    chain: str,
+    hook: str,
+    priority: str,
+    v4_hosts: list[str],
+    v4_nets: list[str],
+    v6_hosts: list[str],
+    v6_nets: list[str],
+    v4_whitelist: list[str] | None = None,
+    v6_whitelist: list[str] | None = None,
+) -> str:
+    """Generate the full raw nftables ruleset string."""
     created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     set_pref = "blacklist"
     counter_v4 = f"{set_pref}_v4"
@@ -329,7 +293,6 @@ def generate_ruleset(
     s6_host = f"{set_pref}_v6_host"
     s6_net = f"{set_pref}_v6_net"
 
-    # Build command lines explicitly to avoid accidental line breaks.
     base_lines = [
         f"# Generated {created_at}",
         f"add table inet {table}",
@@ -354,7 +317,7 @@ def generate_ruleset(
         "",
         (
             f"add chain inet {table} {chain} "
-            f"{{ type filter hook {hook} priority filter - 1; policy accept; }}"
+            f"{{ type filter hook {hook} priority {priority}; policy accept; }}"
         ),
         f"flush chain inet {table} {chain}",
         f'add rule inet {table} {chain} iif "lo" accept',
@@ -363,7 +326,6 @@ def generate_ruleset(
 
     lines = base_lines
 
-    # 2. Add whitelist rules when provided.
     if v4_whitelist:
         lines.append(
             f"add rule inet {table} {chain} "
@@ -375,7 +337,6 @@ def generate_ruleset(
             f"ip6 saddr {{ {', '.join(v6_whitelist)} }} accept"
         )
 
-    # 3. Add drop rules (single line per nft command).
     lines.extend(
         [
             (
@@ -397,31 +358,28 @@ def generate_ruleset(
         ]
     )
 
-    # 4. Append set elements in batches.
-    def add_elements(name, elems, chunk_size=1000):
+    def add_elements(
+        name: str, elems: list[str], chunk_size: int = 1000
+    ) -> None:
         if not elems:
             return
 
-        # Walk the list by chunk_size steps.
         for i in range(0, len(elems), chunk_size):
-            # Slice one batch.
             batch = elems[i : i + chunk_size]
             joined_batch = ", ".join(batch)
             lines.append(
                 f"add element inet {table} {name} {{ {joined_batch} }}"
             )
 
-    # 5. Inject addresses into their target sets.
     add_elements(s4_host, v4_hosts)
     add_elements(s4_net, v4_nets)
     add_elements(s6_host, v6_hosts)
     add_elements(s6_net, v6_nets)
 
-    # Keep a trailing newline in the generated ruleset file.
     return "\n".join(lines) + "\n"
 
 
-def main():
+def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("-c", "--config", help="simple config file", required=True)
     p.add_argument("-o", "--output", default=OUTPUT_DEFAULT)
@@ -449,30 +407,29 @@ def main():
     cfg_path = Path(args.config)
     cfg = parse_conf(cfg_path)
 
-    # Read TOML values directly (native types).
-    urls = cfg.get("BLACKLISTS", [])
-    table = cfg.get("TABLE", "blackhole")
-    chain = cfg.get("CHAIN", "input")
-    hook = cfg.get("HOOK", "input")
+    dry_run: bool = cfg.get("DRY_RUN", False)
+    verbose: bool = cfg.get("VERBOSE", False)
 
-    # No parse_whitelist needed: TOML already yields lists.
-    v4_whitelist = cfg.get("IP_WHITELIST", [])
-    v6_whitelist = cfg.get("IP6_WHITELIST", [])
+    # Configure logging based on verbosity
+    log_level = logging.INFO if verbose else logging.WARNING
+    logging.basicConfig(level=log_level, format="%(levelname)s: %(message)s")
 
-    # No parse_bool needed: TOML already yields booleans.
-    dry_run = cfg.get("DRY_RUN", False)
-    verbose = cfg.get("VERBOSE", False)
+    urls: list[str] = cfg.get("BLACKLISTS", [])
+    table: str = cfg.get("TABLE", "blackhole")
+    chain: str = cfg.get("CHAIN", "input")
+    hook: str = cfg.get("HOOK", "input")
+    priority: str = cfg.get("PRIORITY", "filter - 1")
 
-    # Optional CIDR optimization toggle.
-    do_optimize_cidr = cfg.get("DO_OPTIMIZE_CIDR", True)
+    v4_whitelist: list[str] = cfg.get("IP_WHITELIST", [])
+    v6_whitelist: list[str] = cfg.get("IP6_WHITELIST", [])
 
-    nft_cmd = args.nft or cfg.get("NFT", "nft")
+    do_optimize_cidr: bool = cfg.get("DO_OPTIMIZE_CIDR", True)
+    nft_cmd: str = args.nft or cfg.get("NFT", "nft")
 
     raw_lines = list(fetch_urls(urls))
     v4, v6 = parse_ips(raw_lines)
     v4, v6 = drop_reserved(v4, v6)
 
-    # Pass optimization flag to family collapse.
     v4_hosts, v4_nets = collapse_family(v4, 4, do_optimize=do_optimize_cidr)
     v6_hosts, v6_nets = collapse_family(v6, 6, do_optimize=do_optimize_cidr)
 
@@ -480,6 +437,7 @@ def main():
         table,
         chain,
         hook,
+        priority,
         v4_hosts,
         v4_nets,
         v6_hosts,
@@ -488,9 +446,7 @@ def main():
         v6_whitelist,
     )
     output_path = Path(args.output)
-    output_path.parent.mkdir(
-        parents=True, exist_ok=True
-    )  # Ensure output directory exists.
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(ruleset, encoding="utf-8")
 
     should_apply = args.apply if args.apply is not None else (not dry_run)
@@ -502,5 +458,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        logging.error(f"Fatal Error: {exc}")
         sys.exit(1)

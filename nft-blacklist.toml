@@ -1,4 +1,4 @@
-# Fichier : nft-blacklist.toml
+# Main configuration file : nft-blacklist.toml
 
 # Paths
 RULESET_FILE = "/var/cache/nft-blacklist/blacklist.nft"
@@ -6,7 +6,6 @@ IP_BLACKLIST_FILE = "/var/cache/nft-blacklist/ip-blacklist.list"
 IP6_BLACKLIST_FILE = "/var/cache/nft-blacklist/ip6-blacklist.list"
 
 # Whitelisted addresses
-# Les listes sont gérées nativement, plus besoin de parser une chaîne avec des virgules !
 IP_WHITELIST = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "192.0.2.0/24"]
 IP6_WHITELIST = ["fe80::/10", "fd00::/8"]
 
@@ -21,12 +20,19 @@ BLACKLISTS = [
   "https://lists.blocklist.de/lists/all.txt",                                                # blocklist.de attackers
   "https://blocklist.greensnow.co/greensnow.txt",                                            # GreenSnow
   "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset",
+  # "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/stopforumspam_7d.ipset", # Stopforumspam via Firehol
+  # "https://raw.githubusercontent.com/ipverse/rir-ip/master/country/zz/ipv4-aggregated.txt",   # Ban an entire country(-code), see https://github.com/ipverse/rir-ip
+  # "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/1234/ipv4-aggregated.txt",      # Ban a specific autonomous system (ISP), see https://github.com/ipverse/asn-ip
 ]
 
 # nftables dedicated table name
-TABLE = "blackhole"
+TABLE = "raw"
+CHAIN = "prerouting"
+HOOK = "prerouting"
+# filter before conntrack (-200)
+PRIORITY = "raw"
 
-# Options (booléens natifs)
+# Options
 DO_OPTIMIZE_CIDR = true
 DRY_RUN = false
 VERBOSE = true
