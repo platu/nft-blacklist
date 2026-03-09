@@ -32,6 +32,8 @@ Core workflow: fetch blocklists, parse and normalize IP/CIDR entries, collapse r
 1. Copy script and config:
 
 ```sh
+git clone https://github.com/platu/nft-blacklist.git
+cd nft-blacklist
 sudo mkdir -p /var/cache/nft-blacklist /etc/nft-blacklist
 sudo install -m 0755 nft-blacklist.py /usr/local/bin/nft-blacklist.py
 sudo install -m 0644 nft-blacklist.toml /etc/nft-blacklist/nft-blacklist.toml
@@ -116,7 +118,7 @@ VERBOSE = true
 Run once per day to refresh and apply:
 
 ```sh
-cat <<EOF | sudo tee /etc/cron.d/nft-blasklist
+cat <<EOF | sudo tee /etc/cron.d/nft-blacklist
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 MAILTO=root
 33 */6 * * * root /usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.toml
