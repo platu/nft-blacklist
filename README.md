@@ -32,9 +32,9 @@ Core workflow: fetch blocklists, parse and normalize IP/CIDR entries, collapse r
 1. Copy script and config:
 
 ```sh
-install -m 0755 nft-blacklist.py /usr/local/bin/nft-blacklist.py
-install -m 0644 nft-blacklist.toml /etc/nft-blacklist/nft-blacklist.toml
-mkdir -p /var/cache/nft-blacklist
+sudo mkdir -p /var/cache/nft-blacklist /etc/nft-blacklist
+sudo install -m 0755 nft-blacklist.py /usr/local/bin/nft-blacklist.py
+sudo install -m 0644 nft-blacklist.toml /etc/nft-blacklist/nft-blacklist.toml
 ```
 
 2. Edit `/etc/nft-blacklist/nft-blacklist.toml`.
@@ -60,7 +60,7 @@ Examples:
 sudo /usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.toml
 
 # Generate only, do not apply
-/usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.toml --no-apply
+sudo /usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.toml --no-apply
 
 # Use custom nft command
 sudo /usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.toml --nft "sudo /sbin/nft"
@@ -116,9 +116,11 @@ VERBOSE = true
 Run once per day to refresh and apply:
 
 ```sh
+cat <<EOF | sudo tee /etc/cron.d/nft-blasklist
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 MAILTO=root
 33 */6 * * * root /usr/local/bin/nft-blacklist.py -c /etc/nft-blacklist/nft-blacklist.toml
+EOF
 ```
 
 ## Check Dropped Packets
